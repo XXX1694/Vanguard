@@ -68,6 +68,7 @@ import {
   guardThresholds,
   handoffMarkdown,
   levelOf,
+  mayChime,
   mergeRecords,
   PART_COLORS,
   shortPath,
@@ -167,6 +168,8 @@ let settings: Settings = DEFAULTS;
 let sessionId = "";
 /** Whether the guard may raise its "context is critical" toast again. */
 let guardArmed = true;
+/** When the last chime rang, so a burst of unlocks rings once. */
+let lastChimeAt: number | undefined;
 let lastSaved = "";
 
 const STORE_SESSIONS = "sessions";
@@ -592,8 +595,25 @@ async function lifetimeRecord($: Engine): Promise<SessionRecord> {
   return mergeRecords(life?.others ?? emptyRecord(), await currentRecord($));
 }
 
-/** Unlocks what the counters now reach, with a toast and a log line each. */
-async function checkAchievements($: Engine): Promise<void> {
+/** Plays the chime when the moment may ring (see `mayChime`). */
+function chime($: Engine, at: number, isQuiet: boolean): void {
+  if (!mayChime(settings.sound, isQuiet, lastChimeAt, at)) return;
+  lastChimeAt = at;
+  void $.audio
+    .play({ asset: "sounds/achievement.wav" }, { gain: 0.6 })
+    .catch(() => {});
+}
+
+/**
+ * Unlocks what the counters now reach: a log line for each, one toast and one
+ * chime for the lot. `quiet` (the check at session start, which finds what past
+ * sessions earned) records and shows the banner without a toast or a sound.
+ */
+async function checkAchievements(
+  $: Engine,
+  options: { quiet?: boolean } = {},
+): Promise<void> {
+  const isQuiet = options.quiet === true;
   const have: Unlock[] = (await read($, unlocked)) ?? [];
   const life = await lifetimeRecord($);
   const fresh = newlyUnlocked(
@@ -603,8 +623,9 @@ async function checkAchievements($: Engine): Promise<void> {
   const at = await $.clock.now();
   const lvl = levelOf(xpOf(life) + (have.length + fresh.length) * 150).level;
   const seen: number = (await read($, levelSeen)) ?? 0;
-  if (seen === 0) {
-    await update($, levelSeen, () => lvl);
+  const T = await textsFor($);
+  if (seen === 0 || isQuiet) {
+    if (lvl !== seen) await update($, levelSeen, () => lvl);
   } else if (lvl > seen) {
     await update($, levelSeen, () => lvl);
     await update(
@@ -612,12 +633,9 @@ async function checkAchievements($: Engine): Promise<void> {
       celebration,
       (): Celebration => ({ kind: "level", level: lvl, at }),
     );
-    $.ui.toast((await textsFor($)).newLevel(lvl));
+    $.ui.toast(T.newLevel(lvl));
     await addLog($, "trophy", "warning", "newLevel", lvl);
-    if (settings.sound)
-      void $.audio
-        .play({ asset: "sounds/achievement.wav" }, { gain: 0.6 })
-        .catch(() => {});
+    chime($, at, false);
   }
   if (fresh.length === 0) return;
   const next = [...have, ...fresh.map((a) => ({ id: a.id, at }))];
@@ -626,27 +644,26 @@ async function checkAchievements($: Engine): Promise<void> {
     ...p,
     unlocked: unionUnlocks(p.unlocked, next),
   }));
-  const first = fresh[0];
-  if (first)
-    await update(
-      $,
-      celebration,
-      (): Celebration => ({
-        kind: "achievement",
-        ids: fresh.map((a) => a.id),
-        at,
-      }),
-    );
-  const T = await textsFor($);
-  for (const a of fresh) {
-    const text = T.ach[a.id] ?? a;
-    $.ui.toast(T.achToast(text.title, text.hint));
-    await addLog($, "medal", "warning", "logAch", a.id);
-  }
-  if (settings.sound)
-    void $.audio
-      .play({ asset: "sounds/achievement.wav" }, { gain: 0.6 })
-      .catch(() => {});
+  await update(
+    $,
+    celebration,
+    (): Celebration => ({
+      kind: "achievement",
+      ids: fresh.map((a) => a.id),
+      at,
+    }),
+  );
+  for (const a of fresh) await addLog($, "medal", "warning", "logAch", a.id);
+  if (isQuiet) return;
+  const first = fresh[0]!;
+  const text = T.ach[first.id] ?? first;
+  $.ui.toast(
+    T.achToast(
+      fresh.length > 1 ? T.andMore(text.title, fresh.length - 1) : text.title,
+      text.hint,
+    ),
+  );
+  chime($, at, false);
 }
 
 async function handoffPath($: Engine, at: number): Promise<string> {
@@ -709,7 +726,7 @@ async function startUp($: Engine): Promise<void> {
   await quietly(() => syncAgents($));
   await quietly(() => refreshBreakdown($));
   await quietly(() => refreshArsenal($));
-  await quietly(() => checkAchievements($));
+  await quietly(() => checkAchievements($, { quiet: true }));
   let ticks = 0;
   $.clock.every(1000, () => {
     ticks += 1;
@@ -741,6 +758,7 @@ export const register: Register = (on, options) => {
   settings.ctxWarn = limits.warn;
   settings.ctxCritical = limits.critical;
   guardArmed = true;
+  lastChimeAt = undefined;
 
   on("session.start", async ($, e, next) => {
     await quietly(() => startUp($));

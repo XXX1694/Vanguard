@@ -694,6 +694,25 @@ export function mergeSpawned(old: Hero | undefined, hero: Hero): Hero {
   };
 }
 
+/** The shortest gap between two chimes, so a burst of unlocks rings once. */
+export const CHIME_GAP_MS = 15_000;
+
+/**
+ * Whether a moment worth a chime may ring: sound on, not a quiet check (the
+ * one at session start, which finds what past sessions earned), and the last
+ * chime far enough back.
+ */
+export function mayChime(
+  sound: boolean,
+  isQuiet: boolean,
+  lastAt: number | undefined,
+  now: number,
+): boolean {
+  if (!sound || isQuiet) return false;
+
+  return lastAt === undefined || now - lastAt >= CHIME_GAP_MS;
+}
+
 /** The achievements `stats` reaches that `have` does not hold yet. */
 export function newlyUnlocked(
   stats: VanguardStats,

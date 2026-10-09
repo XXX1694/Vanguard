@@ -32,6 +32,8 @@ import {
   guardThresholds,
   percentLeft,
   fmtClock,
+  mayChime,
+  CHIME_GAP_MS,
 } from "../hooks/lib";
 import type { Hero } from "../types";
 import { iconSvg, LOGO_SVG, toolIcon } from "../hooks/icons";
@@ -988,6 +990,69 @@ test(
     expect(texts.some((t: string) => t.trim() === "0%")).toBe(true);
   },
 );
+
+describe("rewards", () => {
+  test("a chime rings only when sound is on, the moment is live and none just rang", () => {
+    expect(mayChime(true, false, undefined, 0)).toBe(true);
+    expect(mayChime(false, false, undefined, 0)).toBe(false);
+    expect(mayChime(true, true, undefined, 0)).toBe(false);
+    expect(mayChime(true, false, 1000, 1000 + CHIME_GAP_MS - 1)).toBe(false);
+    expect(mayChime(true, false, 1000, 1000 + CHIME_GAP_MS)).toBe(true);
+  });
+});
+
+for (const sound of [true, false])
+  test(
+    `unlocks found at start are quiet; a live one toasts and chimes once (sound ${sound ? "on" : "off"})`,
+    { options: { language: "en", sound } },
+    async ($, on) => {
+      mock.clock(on);
+      mock.env(on, { HOME: "/home/u" });
+      const files: Record<string, string> = {
+        [PROFILE]: JSON.stringify({
+          version: 1,
+          sessions: { "sess-1": OLD_SESSION },
+          unlocked: [],
+          collapsed: {},
+        }),
+      };
+      memFs(on, files);
+      mock.store(on);
+      on("session.start", () => ({ cwd: "/repo" }) as never);
+      on("session.id", () => ({ value: "sess-quiet" }) as never);
+      on("command.register", () => ({ value: undefined }) as never);
+      on("ui.open", () => ({ value: undefined }) as never);
+      const toasts: string[] = [];
+      on("ui.toast", (_$, e) => {
+        toasts.push(String((e as { text?: string }).text ?? e));
+        return { value: undefined } as never;
+      });
+      let chimes = 0;
+      on("audio.play", () => {
+        chimes += 1;
+        return { value: undefined } as never;
+      });
+      let n = 0;
+      on("agent.spawn", () => ({
+        model: "claude-haiku-5-5",
+        agentId: `agent-${++n}`,
+      }));
+      await $.session.start({ cwd: "/repo", source: "startup" } as never);
+      // first, squad and flawless came from the past session: recorded, not announced
+      const saved = JSON.parse(files[PROFILE] ?? "{}");
+      expect(saved.unlocked.map((x: { id: string }) => x.id)).toContain("squad");
+      expect(toasts.filter((t) => t.startsWith("Achievement"))).toHaveLength(0);
+      expect(chimes).toBe(0);
+
+      // six more agents reach Legion (10 in all), and maybe a level with it
+      for (let i = 0; i < 6; i++)
+        await $.agent.spawn({ prompt: "p", description: `T${i}` } as never);
+      expect(
+        toasts.filter((t) => t.startsWith("Achievement unlocked: Legion")),
+      ).toHaveLength(1);
+      expect(chimes).toBe(sound ? 1 : 0);
+    },
+  );
 
 describe("orchestrator rules", () => {
   test("name the plugin's agents and follow the context threshold", () => {
