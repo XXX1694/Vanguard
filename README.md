@@ -5,7 +5,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-8B5CF6"></a>
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-D97757">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.1.0-3B82F6">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.2.0-3B82F6">
   <a href="https://github.com/XXX1694/Vanguard/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/XXX1694/Vanguard/actions/workflows/ci.yml/badge.svg"></a>
 </p>
 
@@ -42,7 +42,7 @@ Five tabs:
 
 | Tab | What it shows |
 | --- | --- |
-| **Overview** | Session time, subagents, tool calls per minute, agent tokens and spend per hour. The main agent's model, effort and current action. Rate limits with reset times and a forecast of when the 5-hour limit runs out. A context guard with a one-click compact and handoff. Live cards for every running subagent. |
+| **Overview** | Session time, subagents, tool calls per minute, agent tokens and spend per hour. The main agent's model, effort and current action. Rate limits with reset times and a forecast of when the 5-hour limit runs out. A context guard with a one-click compact and handoff. Live cards for every running subagent: model, effort, elapsed time, tool calls, tokens and the current action. A finished agent stays a few seconds with its outcome, then moves to the Journal. |
 | **Context** | What fills the context window, as `/context` counts it: system prompt, tools, skills, memory files, messages, the compaction reserve. Which MCP servers and CLAUDE.md files weigh the most. |
 | **Arsenal** | Your MCP servers, plugins and skills. Whatever you used this session lights up with a counter. |
 | **Achievements** | Eleven achievements, from *First sortie* to *Shell master*, with progress toward the next one. |
@@ -96,11 +96,13 @@ Vanguard adds a short set of orchestration rules to the system prompt (turn it o
 
 ### Context guard and handoff
 
-Every compaction of the main conversation keeps your goals, decisions, work state, running agents, blockers and next steps. It also writes a Markdown snapshot to `~/.claude/handoffs/`. The pane can copy a ready-made prompt to resume in a fresh session.
+Every compaction of the main conversation keeps your goals, decisions, work state, running agents, blockers and next steps. It also writes a Markdown snapshot to `~/.claude/handoffs/` (and `LATEST.md` beside it). The snapshot names what started the compaction and how full the window was, each running agent's last action and the agents that finished last. The pane can copy a ready-made prompt to resume in a fresh session.
+
+When the context first passes the critical threshold, one toast suggests `/handoff`. It comes back only after the context drops below the warning again. While the context is past the warning, the band above the prompt shows a `/handoff` button: focus the band (or the pane) and press `h`.
 
 ### Lifetime profile
 
-Levels, XP and achievements are kept in `~/.claude/vanguard/profile.json` and shared by every session in every project. XP comes from finished agents, tool calls, skills, MCP calls and achievements. A banner and a short chime mark each unlock and each new level.
+Levels, XP and achievements are kept in `~/.claude/vanguard/profile.json` and shared by every session in every project. XP comes from finished agents, tool calls, skills, MCP calls and achievements. A banner and a short chime mark each unlock and each new level. Unlocks that arrive together share one toast, chimes are at least 15 seconds apart, and what past sessions already earned is recorded quietly at session start. Turn the sound off in settings.
 
 ## Settings
 
@@ -112,9 +114,9 @@ Open `/plugin`, choose **vanguard**, then **Configure**:
 | Orchestrator rules | on | Add the orchestration rules to the system prompt |
 | Open at start | on | Open the pane in every new session |
 | Animations | on | Spinners, pulses and the logo shimmer (desktop) |
-| Achievement sound | on | A short chime on each unlock |
-| Context warning, % | 70 | When the context guard turns yellow |
-| Context critical, % | 85 | When it turns red and suggests a handoff |
+| Achievement sound | on | A short chime on an unlock or a new level |
+| Context warning, % | 70 | When the context guard turns yellow (1–99) |
+| Context critical, % | 85 | When it turns red and suggests a handoff. Always above the warning: a lower value is raised to warning + 1 |
 | Arsenal / Achievements / Journal | on | Show these tabs |
 
 ## Privacy
