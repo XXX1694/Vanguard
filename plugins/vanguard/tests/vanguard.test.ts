@@ -23,7 +23,13 @@ import {
   mcpServer,
   serverLabel,
   orchestratorRules,
+  EMPTY_RETIRED,
+  mergeSpawned,
+  reconcileHeroes,
+  streakWith,
+  trimHeroes,
 } from "../hooks/lib";
+import type { Hero } from "../types";
 import { iconSvg, LOGO_SVG, toolIcon } from "../hooks/icons";
 import { dict, LANGS, langFromLocale } from "../hooks/i18n";
 
@@ -678,6 +684,139 @@ test(
     expect(Object.keys(JSON.parse(files[PROFILE] ?? "{}").sessions)).toContain(
       "sess-1",
     );
+  },
+);
+
+const hero = (id: string, status: Hero["status"], extra = {}): Hero => ({
+  id,
+  title: id,
+  type: "scout",
+  model: "claude-haiku-5-5",
+  status,
+  startedAt: 0,
+  actions: 1,
+  tokens: 10,
+  ...extra,
+});
+
+describe("squad", () => {
+  test("the list adds, finishes and stops agents", () => {
+    const known = [
+      hero("a", "running", { listed: true }),
+      hero("b", "running"),
+      hero("c", "running", { listed: true }),
+      hero("d", "done", { listed: true }),
+    ];
+    const next = reconcileHeroes(
+      known,
+      [
+        { id: "c", status: "completed", type: "scout" },
+        { id: "e", status: "running", type: "builder", description: "Build" },
+        { id: "f", status: "failed", type: "builder" },
+      ],
+      500,
+    );
+    const by = (id: string) => next.find((x) => x.id === id);
+    // listed before, now gone: its loop ended without a turn.complete
+    expect(by("a")?.status).toBe("stopped");
+    expect(by("a")?.endedAt).toBe(500);
+    // never listed (a remote agent): left to its own events
+    expect(by("b")?.status).toBe("running");
+    expect(by("c")?.status).toBe("done");
+    expect(by("d")?.status).toBe("done");
+    expect(by("e")?.title).toBe("Build");
+    expect(by("e")?.listed).toBe(true);
+    // finished before we ever saw it: nothing to show
+    expect(by("f")).toBeUndefined();
+  });
+
+  test("a spawn keeps what the list and the first steps already told", () => {
+    const early = hero("a", "running", {
+      model: "claude-opus-5-5",
+      actions: 4,
+      startedAt: 100,
+      title: "a",
+    });
+    const merged = mergeSpawned(
+      early,
+      hero("a", "running", { actions: 0, startedAt: 300, title: "Recon" }),
+    );
+    expect(merged.actions).toBe(4);
+    expect(merged.startedAt).toBe(100);
+    expect(merged.title).toBe("Recon");
+    expect(merged.model).toBe("claude-opus-5-5");
+  });
+
+  test("the squad stays bounded and its totals stay right", () => {
+    const list = [
+      hero("x", "failed"),
+      ...Array.from({ length: 5 }, (_, i) => hero(`d${i}`, "done")),
+      hero("run", "running"),
+    ];
+    const r = trimHeroes(list, EMPTY_RETIRED, 2);
+    expect(r.list.map((x) => x.id)).toEqual(["d3", "d4", "run"]);
+    expect(r.retired.total).toBe(4);
+    expect(r.retired.done).toBe(3);
+    expect(r.retired.failed).toBe(1);
+    expect(r.retired.streak).toBe(3);
+    expect(r.retired.actions).toBe(4);
+    expect(r.retired.tokens).toBe(40);
+    // the streak runs on through the agents still listed
+    expect(streakWith(["done", "done"], r.retired)).toBe(5);
+    expect(streakWith(["failed", "done"], r.retired)).toBe(1);
+    // trimming again folds in on top
+    const again = trimHeroes(r.list, r.retired, 0);
+    expect(again.list.map((x) => x.id)).toEqual(["run"]);
+    expect(again.retired.total).toBe(6);
+    expect(again.retired.streak).toBe(5);
+  });
+});
+
+test(
+  "an agent that vanishes from the list is stopped, shown briefly, then leaves",
+  { options: { language: "en" } },
+  async ($, on) => {
+    const clock = mock.clock(on);
+    mock.store(on);
+    startHooks(on, "sess-squad");
+    let listed: { id: string; status: string; type: string }[] = [];
+    on("agent.list", () => ({ value: listed }) as never);
+    on("agent.spawn", () => ({
+      model: "claude-haiku-5-5",
+      agentId: "agent-1",
+    }));
+    await $.session.start({ cwd: "/repo", source: "startup" } as never);
+    await $.agent.spawn({ prompt: "p", description: "Map the repo" } as never);
+    listed = [{ id: "agent-1", status: "running", type: "scout" }];
+    await clock.advance(3000);
+    listed = [];
+    await clock.advance(3000);
+
+    const pane = await $.ui.mount({
+      plugin: "vanguard",
+      surface: "terminal",
+      component: "Pane",
+      props: { ...PANE_PROPS, bodyColumns: 150 },
+      requestId: "vanguard",
+    });
+    expect(await pane.find({ type: "Text", text: "Map the repo" })).toBeDefined();
+    expect(await pane.find({ type: "Text", text: "Stopped" })).toBeDefined();
+
+    await clock.advance(7000);
+    await pane.unmount();
+    const later = await $.ui.mount({
+      plugin: "vanguard",
+      surface: "terminal",
+      component: "Pane",
+      props: { ...PANE_PROPS, bodyColumns: 150 },
+      requestId: "vanguard",
+    });
+    expect(await later.find({ type: "Text", text: "Map the repo" })).toBeUndefined();
+    expect(
+      await later.find({ type: "Text", text: "No subagents running" }),
+    ).toBeDefined();
+    await later.press({ key: "tab-log" });
+    expect(await later.find({ type: "Text", text: /Map the repo/ })).toBeDefined();
   },
 );
 

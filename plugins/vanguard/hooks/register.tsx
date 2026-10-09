@@ -19,6 +19,7 @@ import type {
   Sample,
   SessionRecord,
   Snapshot,
+  Retired,
   Tab,
   Unlock,
   Usage,
@@ -43,6 +44,13 @@ import {
 } from "./icons";
 import {
   ACHIEVEMENTS,
+  addRetired,
+  EMPTY_RETIRED,
+  mergeSpawned,
+  reconcileHeroes,
+  streakWith,
+  trimHeroes,
+  type ListedAgent,
   type VanguardStats,
   bar,
   burnPerHour,
@@ -70,7 +78,6 @@ import {
   orchestratorRules,
   nextAchievement,
   serverLabel,
-  successStreak,
   meterColor,
   modelBadge,
   pad,
@@ -230,11 +237,6 @@ const EMPTY_USAGE: Usage = {
   snapshots: 0,
 };
 
-const DONE_STATUSES: Record<string, HeroStatus> = {
-  completed: "done",
-  failed: "failed",
-  killed: "stopped",
-};
 const STATUS_VIEW: Record<HeroStatus, { icon: IconName; color: string }> = {
   running: { icon: "activity", color: "warning" },
   done: { icon: "check", color: "success" },
@@ -323,40 +325,33 @@ function toMeters(u: any, old?: Meters | null): Meters {
   };
 }
 
+/** Brings the squad in line with the engine's agent list, in one write. */
 async function syncAgents($: Engine): Promise<void> {
-  let listed: any[] = [];
+  let listed: ListedAgent[] = [];
   try {
     listed = await $.agent.list();
   } catch {
     return;
   }
   const now = await $.clock.now();
-  const known: Hero[] = await read($, heroes);
-  const byId = new Map(known.map((x) => [x.id, x]));
-  const fresh: Hero[] = [];
-  for (const a of listed) {
-    const hero = byId.get(a.id);
-    const finished = DONE_STATUSES[a.status];
-    if (!hero && !finished) {
-      fresh.push({
-        id: a.id,
-        title: a.description || a.name || a.type,
-        type: a.type,
-        model: "?",
-        status: "running",
-        startedAt: now,
-        actions: 0,
-      });
-    } else if (hero && hero.status === "running" && finished) {
-      await patchHero($, a.id, (x) => ({
-        ...x,
-        status: finished,
-        endedAt: now,
-      }));
-    }
-  }
-  if (fresh.length > 0)
-    await update($, heroes, (list: Hero[]) => [...list, ...fresh]);
+  await update($, heroes, (list: Hero[]) => reconcileHeroes(list, listed, now));
+}
+
+/** Keeps the squad bounded: old finished agents become counters in `usage.retired`. */
+async function trimSquad($: Engine): Promise<void> {
+  let gone: Retired | undefined;
+  await update($, heroes, (list: Hero[]) => {
+    const r = trimHeroes(list, EMPTY_RETIRED);
+    if (r.list.length === list.length) return list;
+    gone = r.retired;
+    return r.list;
+  });
+  const delta = gone;
+  if (delta)
+    await bumpUsage($, (u) => ({
+      ...u,
+      retired: addRetired(u.retired ?? EMPTY_RETIRED, delta),
+    }));
 }
 
 /** Reads what the session can reach: MCP servers from the tool list, plugins and skills from the commands. */
@@ -460,15 +455,20 @@ function recordOf(
   at: number,
 ): SessionRecord {
   const finished = list.filter((x) => x.status !== "running");
+  const retired = u.retired ?? EMPTY_RETIRED;
   const count = (...names: string[]) =>
     names.reduce((n, k) => n + (u.tools[k] ?? 0), 0);
 
   return {
     ...emptyRecord(sessionId, at),
-    agentsTotal: list.length,
-    agentsDone: finished.filter((x) => x.status === "done").length,
+    agentsTotal: list.length + retired.total,
+    agentsDone:
+      finished.filter((x) => x.status === "done").length + retired.done,
     peakParallel: u.peak,
-    streak: successStreak(finished.map((x) => x.status)),
+    streak: streakWith(
+      finished.map((x) => x.status),
+      retired,
+    ),
     calls: Object.values(u.tools).reduce((a, b) => a + b, 0),
     mcpCalls: Object.values(u.mcp).reduce((a, b) => a + b, 0),
     mcpServers: Object.keys(u.mcp),
@@ -710,6 +710,7 @@ async function startUp($: Engine): Promise<void> {
     ticks += 1;
     void quietly(async () => {
       if (ticks % 3 === 0) await syncAgents($);
+      if (ticks % 30 === 0) await trimSquad($);
       if (ticks % 30 === 0) await refreshBreakdown($);
       if (ticks % 60 === 0) await refreshArsenal($);
       if (ticks % 15 === 0) await saveSession($);
@@ -779,10 +780,13 @@ export const register: Register = (on, options) => {
           startedAt: now,
           actions: 0,
         };
-        await update($, heroes, (list: Hero[]) => [
-          ...list.filter((x) => x.id !== hero.id),
-          hero,
-        ]);
+        await update($, heroes, (list: Hero[]) => {
+          const old = list.find((x) => x.id === hero.id);
+          return [
+            ...list.filter((x) => x.id !== hero.id),
+            mergeSpawned(old, hero),
+          ];
+        });
         const badge = modelBadge(started.model);
         await addLog($, badge.icon, badge.color, "logLaunched", hero.title);
         const live = ((await read($, heroes)) as Hero[]).filter(
@@ -1039,11 +1043,23 @@ export const register: Register = (on, options) => {
 
     const running = list.filter((x) => x.status === "running");
     const finished = list.filter((x) => x.status !== "running");
-    const won = list.filter((x) => x.status === "done").length;
-    const lost = list.filter((x) => x.status === "failed").length;
-    const agentCalls = list.reduce((s, x) => s + x.actions, 0);
+    // The squad: who runs, and who just finished, shown with the outcome for a moment.
+    const squad = list.filter(
+      (x) =>
+        x.status === "running" || now - (x.endedAt ?? 0) < FRESH_DONE_MS,
+    );
+    const retired = used.retired ?? EMPTY_RETIRED;
+    const won =
+      list.filter((x) => x.status === "done").length + retired.done;
+    const lost =
+      list.filter((x) => x.status === "failed").length + retired.failed;
+    const agentsTotal = list.length + retired.total;
+    const finishedTotal = finished.length + retired.total;
+    const agentCalls =
+      list.reduce((s, x) => s + x.actions, 0) + retired.actions;
     const actions = agentCalls + (boss?.actions ?? 0);
-    const agentTokens = list.reduce((s, x) => s + (x.tokens ?? 0), 0);
+    const agentTokens =
+      list.reduce((s, x) => s + (x.tokens ?? 0), 0) + retired.tokens;
     const life: Lifetime | null = await read($, lifetime);
     const folded: Record<string, boolean> = (await read($, collapsed)) ?? {};
     const sessionRec = recordOf(list, used, m?.usd, now);
@@ -1151,6 +1167,7 @@ export const register: Register = (on, options) => {
       color: string,
       size = 14,
       key?: string,
+      alt?: string,
     ): RenderNode => {
       const known = name in GLYPHS;
       if (Svg && known)
@@ -1158,7 +1175,7 @@ export const register: Register = (on, options) => {
           <Svg
             key={key}
             source={iconSvg(name as IconName, color)}
-            alt={name}
+            alt={alt ?? name}
             width={size}
             height={size}
           />
@@ -1434,7 +1451,7 @@ export const register: Register = (on, options) => {
         "users",
         "warning",
         T.tileAgents,
-        `${running.length} / ${list.length}`,
+        `${running.length} / ${agentsTotal}`,
         T.doneFailed(won, lost),
       ),
       tile(
@@ -1451,12 +1468,8 @@ export const register: Register = (on, options) => {
         "merged",
         T.tileTokens,
         agentTokens ? fmtTokens(agentTokens) : "—",
-        list.length
-          ? T.average(
-              fmtTokens(
-                Math.round(agentTokens / Math.max(1, finished.length || 1)),
-              ),
-            )
+        agentTokens && finishedTotal
+          ? T.average(fmtTokens(Math.round(agentTokens / finishedTotal)))
           : " ",
       ),
       tile(
@@ -1510,7 +1523,7 @@ export const register: Register = (on, options) => {
           "users",
           "warning",
           T.figAgents,
-          `${running.length}/${list.length}`,
+          `${running.length}/${agentsTotal}`,
           lost ? `${lost} ✗` : "",
         )}
         {figure(
@@ -1809,9 +1822,22 @@ export const register: Register = (on, options) => {
     );
 
     // ── Running agents ───────────────────────────────────────────────────
+    /** A squad member's lead mark: a spinner while it runs, then its outcome. */
+    const heroMark = (hero: Hero, color: string, size: number) =>
+      hero.status === "running"
+        ? live("loader", color, size)
+        : icon(
+            STATUS_VIEW[hero.status].icon,
+            STATUS_VIEW[hero.status].color,
+            size,
+            undefined,
+            T.status[hero.status],
+          );
+
     const agentCard = (hero: Hero) => {
       const badge = modelBadge(hero.model);
       const elapsed = (hero.endedAt ?? now) - hero.startedAt;
+      const isRunning = hero.status === "running";
 
       return (
         <Box
@@ -1828,7 +1854,7 @@ export const register: Register = (on, options) => {
           <Box justifyContent="space-between">
             {line(
               "model",
-              live("loader", badge.color, 14),
+              heroMark(hero, badge.color, 14),
               <Text bold color={badge.color}>
                 {hero.model === "?" ? T.modelPending : shortModel(hero.model)}
               </Text>,
@@ -1855,8 +1881,14 @@ export const register: Register = (on, options) => {
               <Text dimColor>{fmtTokens(hero.tokens)}</Text>
             ) : null}
           </Box>
-          {action("now", hero.lastAction, hero.lastDetail, cardWidth)}
-          {anim ? (
+          {isRunning ? (
+            action("now", hero.lastAction, hero.lastDetail, cardWidth)
+          ) : (
+            <Text color={STATUS_VIEW[hero.status].color}>
+              {T.status[hero.status]}
+            </Text>
+          )}
+          {anim && isRunning ? (
             <Text color={badge.color}>{pulseBar(now, cardWidth - frame)}</Text>
           ) : null}
           <Box
@@ -1880,23 +1912,30 @@ export const register: Register = (on, options) => {
 
     const agentRow = (hero: Hero) => {
       const badge = modelBadge(hero.model);
+      const isRunning = hero.status === "running";
 
       return (
         <Box key={hero.id} flexDirection="column">
           <Box justifyContent="space-between" columnGap={1}>
             {line(
               "t",
-              live("loader", badge.color, 13),
+              heroMark(hero, badge.color, 13),
               <Text bold wrap="truncate-end">
                 {clip(hero.title, inner - frame - 18)}
               </Text>,
             )}
             <Text dimColor>
-              {dur(now - hero.startedAt)} · {hero.actions}
+              {dur((hero.endedAt ?? now) - hero.startedAt)} · {hero.actions}
             </Text>
           </Box>
           <Box paddingLeft={2}>
-            {action("now", hero.lastAction, hero.lastDetail, inner)}
+            {isRunning ? (
+              action("now", hero.lastAction, hero.lastDetail, inner)
+            ) : (
+              <Text color={STATUS_VIEW[hero.status].color}>
+                {T.status[hero.status]}
+              </Text>
+            )}
           </Box>
         </Box>
       );
@@ -1913,7 +1952,7 @@ export const register: Register = (on, options) => {
       .join(" · ");
 
     const partyBody =
-      running.length === 0 ? (
+      squad.length === 0 ? (
         line(
           "empty",
           icon("bot", "inactive"),
@@ -1921,7 +1960,7 @@ export const register: Register = (on, options) => {
         )
       ) : isCompact ? (
         <Box flexDirection="column" rowGap={space.stack}>
-          {running.map(agentRow)}
+          {squad.map(agentRow)}
         </Box>
       ) : (
         <Box
@@ -1930,7 +1969,7 @@ export const register: Register = (on, options) => {
           columnGap={gutter}
           rowGap={space.stack}
         >
-          {running.map(agentCard)}
+          {squad.map(agentCard)}
         </Box>
       );
 
@@ -1964,7 +2003,7 @@ export const register: Register = (on, options) => {
                 </Text>
               )
             ) : (
-              icon(view.icon, view.color, 14, "s")
+              icon(view.icon, view.color, 14, "s", T.status[hero.status])
             )}
             {icon(badge.icon, badge.color, 12, "m")}
             <Text wrap="truncate-end">

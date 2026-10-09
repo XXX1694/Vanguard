@@ -1,6 +1,6 @@
 // Pure helpers for Vanguard: no engine calls, so tests can reach them directly.
 
-import type { Hero, SessionRecord } from "../types";
+import type { Hero, Retired, SessionRecord } from "../types";
 
 import type { IconName } from "./icons";
 
@@ -486,6 +486,143 @@ export function successStreak(statuses: string[]): number {
   }
 
   return n;
+}
+
+export const EMPTY_RETIRED: Retired = {
+  total: 0,
+  done: 0,
+  failed: 0,
+  streak: 0,
+  actions: 0,
+  tokens: 0,
+};
+
+/** How many finished agents the live list keeps; older ones become counters. */
+export const KEEP_FINISHED = 60;
+
+/**
+ * Keeps every running agent and the newest `keep` finished ones, in order, and
+ * folds the rest into `retired` so totals and the success streak stay right.
+ */
+export function trimHeroes(
+  list: Hero[],
+  retired: Retired,
+  keep = KEEP_FINISHED,
+): { list: Hero[]; retired: Retired } {
+  const finished = list.filter((x) => x.status !== "running");
+  const over = finished.length - keep;
+  if (over <= 0) return { list, retired };
+  const gone = finished.slice(0, over);
+  const dropped = new Set(gone.map((x) => x.id));
+
+  return {
+    list: list.filter((x) => !dropped.has(x.id)),
+    retired: addRetired(retired, {
+      total: gone.length,
+      done: gone.filter((x) => x.status === "done").length,
+      failed: gone.filter((x) => x.status === "failed").length,
+      streak: successStreak(gone.map((x) => x.status)),
+      actions: gone.reduce((n, x) => n + x.actions, 0),
+      tokens: gone.reduce((n, x) => n + (x.tokens ?? 0), 0),
+    }),
+  };
+}
+
+/** Two batches of retired agents as one, `newer` retired after `older`. */
+export function addRetired(older: Retired, newer: Retired): Retired {
+  return {
+    total: older.total + newer.total,
+    done: older.done + newer.done,
+    failed: older.failed + newer.failed,
+    streak:
+      newer.streak === newer.total
+        ? older.streak + newer.streak
+        : newer.streak,
+    actions: older.actions + newer.actions,
+    tokens: older.tokens + newer.tokens,
+  };
+}
+
+/** Successes in a row over the retired agents and then the live list's finished ones. */
+export function streakWith(finished: string[], retired: Retired): number {
+  const live = successStreak(finished);
+
+  return live === finished.length ? live + retired.streak : live;
+}
+
+/** What `$.agent.list()` reports, as far as the squad needs it. */
+export type ListedAgent = {
+  id: string;
+  status: string;
+  description?: string;
+  name?: string;
+  type: string;
+};
+
+const LIST_DONE: Record<string, Hero["status"]> = {
+  completed: "done",
+  failed: "failed",
+  killed: "stopped",
+};
+
+/**
+ * Brings the squad in line with `$.agent.list()`: adds agents the list names
+ * that the squad misses, ends those it reports finished, and stops a running
+ * agent the list named before and no longer does (its loop is gone, so no
+ * `turn.complete` will come). Agents the list never named (a workflow's remote
+ * agents) are left to their own events.
+ */
+export function reconcileHeroes(
+  known: Hero[],
+  listed: ListedAgent[],
+  now: number,
+): Hero[] {
+  const byId = new Map(listed.map((a) => [a.id, a]));
+  const have = new Set(known.map((x) => x.id));
+  const next = known.map((hero): Hero => {
+    const a = byId.get(hero.id);
+    if (!a) {
+      return hero.status === "running" && hero.listed
+        ? { ...hero, status: "stopped", endedAt: now }
+        : hero;
+    }
+    const finished = LIST_DONE[a.status];
+    if (hero.status === "running" && finished)
+      return { ...hero, status: finished, endedAt: now, listed: true };
+
+    return hero.listed ? hero : { ...hero, listed: true };
+  });
+  for (const a of listed) {
+    if (have.has(a.id) || LIST_DONE[a.status]) continue;
+    next.push({
+      id: a.id,
+      title: a.description || a.name || a.type,
+      type: a.type,
+      model: "?",
+      status: "running",
+      startedAt: now,
+      actions: 0,
+      listed: true,
+    });
+  }
+
+  return next;
+}
+
+/**
+ * A hero `agent.spawn` reports, merged with what the squad already knew of it
+ * (the list or the agent's first steps can come before the spawn resolves).
+ */
+export function mergeSpawned(old: Hero | undefined, hero: Hero): Hero {
+  if (!old) return hero;
+
+  return {
+    ...old,
+    title: hero.title,
+    type: hero.type,
+    model: old.model !== "?" ? old.model : hero.model,
+    startedAt: Math.min(old.startedAt, hero.startedAt),
+  };
 }
 
 /** The achievements `stats` reaches that `have` does not hold yet. */
