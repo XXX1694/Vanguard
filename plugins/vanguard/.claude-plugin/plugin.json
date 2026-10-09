@@ -1,0 +1,77 @@
+{
+  "name": "vanguard",
+  "version": "1.0.0",
+  "description": "Command center for Claude Code: a live pane for your squad of subagents, limits and context, an orchestrator that fans work out to specialist agents, bundled MCP servers and skills, and a lifetime profile with levels and achievements.",
+  "author": {
+    "name": "Abzal Serikbay"
+  },
+  "homepage": "https://github.com/XXX1694/Vanguard",
+  "repository": "https://github.com/XXX1694/Vanguard",
+  "license": "MIT",
+  "keywords": [
+    "orchestrator",
+    "subagents",
+    "dashboard",
+    "context",
+    "mcp",
+    "skills",
+    "gamification"
+  ],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "orchestrator": {
+      "type": "boolean",
+      "title": "Правила оркестратора",
+      "description": "Добавлять в системный промпт правила Vanguard: делить работу на отряд агентов, брать свежую документацию, проверять результат.",
+      "default": true
+    },
+    "autoOpen": {
+      "type": "boolean",
+      "title": "Открывать при старте",
+      "description": "Открывать панель Vanguard в начале каждой сессии; иначе только по /vanguard.",
+      "default": true
+    },
+    "animations": {
+      "type": "boolean",
+      "title": "Анимации",
+      "description": "Крутящиеся индикаторы, пульсация, блик на логотипе и бегущая полоса у работающих агентов.",
+      "default": true
+    },
+    "sound": {
+      "type": "boolean",
+      "title": "Звук достижений",
+      "description": "Короткий звук, когда открывается достижение.",
+      "default": true
+    },
+    "ctxWarn": {
+      "type": "number",
+      "title": "Контекст: предупреждение, %",
+      "description": "С какого заполнения контекста страж становится жёлтым.",
+      "default": 70
+    },
+    "ctxCritical": {
+      "type": "number",
+      "title": "Контекст: критично, %",
+      "description": "С какого заполнения контекста страж становится красным и предлагает сжать.",
+      "default": 85
+    },
+    "showArsenal": {
+      "type": "boolean",
+      "title": "Раздел «Арсенал»",
+      "description": "Показывать MCP-серверы, плагины и скиллы.",
+      "default": true
+    },
+    "showAchievements": {
+      "type": "boolean",
+      "title": "Раздел «Достижения»",
+      "description": "Показывать достижения и прогресс.",
+      "default": true
+    },
+    "showLog": {
+      "type": "boolean",
+      "title": "Раздел «Журнал»",
+      "description": "Показывать журнал событий и завершённых агентов.",
+      "default": true
+    }
+  }
+}
