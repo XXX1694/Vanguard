@@ -207,6 +207,45 @@ test(
   },
 );
 
+test(
+  "a snapshot that cannot be written never breaks the compaction",
+  RU,
+  async ($, on) => {
+    mock.clock(on);
+    mock.env(on, { HOME: "/home/u" });
+    on(
+      "session.compact",
+      () =>
+        ({
+          messages: [{ role: "user", text: "SUMMARY", toolUses: [] }],
+          tokensBefore: 1,
+        }) as never,
+    );
+    on("fs.write", () => {
+      throw new Error("disk full");
+    });
+    on("ui.toast", () => {
+      throw new Error("no toasts here");
+    });
+
+    const r = await $.session.compact({
+      trigger: "manual",
+      messages: [{ role: "user", text: "chat", toolUses: [] }],
+    } as never);
+    expect(r.skip).toBeUndefined();
+    expect((r as { tokensBefore?: number }).tokensBefore).toBe(1);
+  },
+);
+
+test("a tool call goes through whatever the bookkeeping does", RU, async ($, on) => {
+  on("clock.now", () => {
+    throw new Error("no clock");
+  });
+  on("tool.call", () => ({ result: "ran" }) as never);
+  const r = await $.tool.call({ tool: "Bash", command: "ls" } as never);
+  expect((r as { result?: string }).result).toBe("ran");
+});
+
 describe("mechanics", () => {
   test("streaks, unlocks and the next achievement", () => {
     expect(successStreak(["failed", "done", "done"])).toBe(2);

@@ -756,7 +756,7 @@ export const register: Register = (on, options) => {
   });
 
   on("command.run", { command: "vanguard" }, async ($) => {
-    await $.ui.open({ id: PANE, title: TITLE });
+    await $.ui.open({ id: PANE, title: TITLE }).catch(() => {});
 
     return { text: (await textsFor($)).opened };
   });
@@ -794,7 +794,7 @@ export const register: Register = (on, options) => {
     });
 
     return started;
-  });
+  }).catch(($, e, next) => next(e));
 
   on("turn.step", async function* ($, e, next) {
     await quietly(async () => {
@@ -873,7 +873,7 @@ export const register: Register = (on, options) => {
     });
 
     return next(e);
-  });
+  }).catch(($, e, next) => next(e));
 
   on("turn.complete", async ($, e, next) => {
     await quietly(async () => {
@@ -1013,7 +1013,7 @@ export const register: Register = (on, options) => {
     }
 
     return result;
-  });
+  }).catch(($, e, next) => next(e));
 
   on("ui.render", { component: "Pane", requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e);
