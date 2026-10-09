@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: Reviews a diff or a set of files for real defects - wrong behaviour, missed edge cases, broken contracts, security holes - and ranks what it finds. Read-only. Use before declaring work done or merging.
-tools: Glob, Grep, Read, LS, Bash
+disallowedTools: Edit, Write, NotebookEdit
 model: inherit
 color: red
 ---

@@ -8,7 +8,7 @@ description: Map an unfamiliar codebase fast with parallel scouts - stack, entry
 Map the codebase without flooding the main thread.
 
 1. Read the top level yourself: README, manifest files (package.json, pubspec.yaml, go.mod, Cargo.toml, pyproject.toml), CLAUDE.md, CI config.
-2. Launch three to five `scout` agents in one message, each owning one question:
+2. Launch three to five `vanguard:scout` agents in one message, each owning one question:
    - entry points and request or app flow,
    - data layer and external services,
    - build, test and deploy commands,

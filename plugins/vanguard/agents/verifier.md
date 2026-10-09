@@ -1,7 +1,7 @@
 ---
 name: verifier
 description: Proves a change works - runs the test suite and type checks, reproduces the original bug to confirm the fix, and for web UI drives a real browser through the playwright MCP tools. Reports what passed, what failed and what could not be checked.
-tools: Glob, Grep, Read, LS, Bash
+disallowedTools: Edit, Write, NotebookEdit
 model: inherit
 color: green
 ---
