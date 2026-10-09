@@ -5,7 +5,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-8B5CF6"></a>
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-D97757">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.0.0-3B82F6">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.1.0-3B82F6">
   <a href="https://github.com/XXX1694/Vanguard/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/XXX1694/Vanguard/actions/workflows/ci.yml/badge.svg"></a>
 </p>
 
@@ -36,7 +36,7 @@ Start a new session, or run `/vanguard` to open the pane now.
 
 Opens beside the conversation at the start of every session (`/vanguard` opens it any time).
 
-> In 1.0 the pane's interface is in Russian. An English interface is planned.
+The pane speaks **10 languages**: English, Русский, 中文, हिन्दी, Español, Português, 日本語, 한국어, Deutsch and Français. It follows your system locale, and the switcher at the end of the tab row changes it on the spot. A native list appears on the desktop, and on the terminal a button cycles through the languages. Your choice is remembered in your profile.
 
 Five tabs:
 
@@ -108,6 +108,7 @@ Open `/plugin`, choose **vanguard**, then **Configure**:
 
 | Setting | Default | |
 | --- | --- | --- |
+| Language | auto | `auto` follows the system locale. The switcher in the pane overrides it. |
 | Orchestrator rules | on | Add the orchestration rules to the system prompt |
 | Open at start | on | Open the pane in every new session |
 | Animations | on | Spinners, pulses and the logo shimmer (desktop) |

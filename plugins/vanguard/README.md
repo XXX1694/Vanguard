@@ -8,6 +8,7 @@ This folder is the plugin. The full documentation and install steps are in the [
 | `hooks/register.tsx` | The live pane, the orchestrator rules, the context guard and the profile |
 | `hooks/lib.ts` | Pure helpers, covered by tests |
 | `hooks/icons.ts` | Icons, logo and animated SVGs |
+| `hooks/i18n.ts` | Interface strings in 10 languages |
 | `types/index.d.ts` | The plugin's state contract |
 | `agents/` | `scout`, `architect`, `builder`, `reviewer`, `verifier` |
 | `skills/` | `orchestrate`, `recon`, `docs`, `ship-check` |
