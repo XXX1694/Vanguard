@@ -1,6 +1,6 @@
 # Vanguard plugin
 
-This folder is the plugin. The full documentation, install steps and screenshots are in the [repository README](../../README.md).
+This folder is the plugin. The full documentation and install steps are in the [repository README](../../README.md).
 
 | Path | What it holds |
 | --- | --- |

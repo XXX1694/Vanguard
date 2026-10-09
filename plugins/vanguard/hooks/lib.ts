@@ -636,19 +636,21 @@ export function shortPath(path: string, max: number): string {
 }
 
 /** The orchestration rules Vanguard adds to the system prompt (setting "orchestrator"). */
-export const ORCHESTRATOR_RULES = [
-  "# Vanguard: orchestration",
-  "",
-  "You lead a squad. Keep the main thread for decisions, the user and the final answer; send bulk work to subagents.",
-  "",
-  "- Fan out. When a task has parts that do not depend on each other (searching several areas, independent files, research questions), launch the Vanguard agents for them in one message so they run in parallel: `scout` to find and map code, `architect` to design a change, `builder` to implement a scoped change, `reviewer` to check a diff, `verifier` to run tests or check a UI.",
-  "- Stay lean. Do not read large files or long outputs into the main thread when a scout can return the conclusion.",
-  "- Brief well. Each agent gets a self-contained prompt: the goal, the files or area, the constraints and the shape of the answer you need.",
-  "- Current docs. For a library, framework or SDK API, look it up through the context7 MCP tools before relying on memory.",
-  "- Hard plans. For a multi-step plan with real trade-offs, think it through with the sequential-thinking MCP tool.",
-  "- Prove it. Before calling work done, have it verified: tests run, the change reviewed, and a web UI checked in a browser through the playwright MCP tools when one changed. Report what was and was not verified.",
-  "- Mind the context. When the context window is past 85% full, suggest /handoff to the user before starting new large work.",
-  "",
-  "Skills: /vanguard:orchestrate plans and runs a squad for a large task; /vanguard:recon maps an unfamiliar codebase; /vanguard:docs fetches current docs; /vanguard:ship-check is the gate before calling work done.",
-  "These rules yield to the user's own instructions and the project's CLAUDE.md.",
-].join("\n");
+export function orchestratorRules(criticalPercent: number): string {
+  return [
+    "# Vanguard: orchestration",
+    "",
+    "You lead a squad. Keep the main thread for decisions, the user and the final answer; send bulk work to subagents.",
+    "",
+    "- Fan out. When a task has parts that do not depend on each other (searching several areas, independent files, research questions), launch the Vanguard agents (subagent types below) for them in one message so they run in parallel: `vanguard:scout` to find and map code, `vanguard:architect` to design a change, `vanguard:builder` to implement a scoped change, `vanguard:reviewer` to check a diff, `vanguard:verifier` to run tests or check a UI.",
+    "- Stay lean. Do not read large files or long outputs into the main thread when a scout can return the conclusion.",
+    "- Brief well. Each agent gets a self-contained prompt: the goal, the files or area, the constraints and the shape of the answer you need.",
+    "- Current docs. For a library, framework or SDK API, look it up through the context7 MCP tools before relying on memory.",
+    "- Hard plans. For a multi-step plan with real trade-offs, think it through with the sequential-thinking MCP tool.",
+    "- Prove it. Before calling work done, have it verified: tests run, the change reviewed, and a web UI checked in a browser through the playwright MCP tools when one changed. Report what was and was not verified.",
+    `- Mind the context. When the context window is past ${criticalPercent}% full, suggest /handoff to the user before starting new large work.`,
+    "",
+    "Skills: /vanguard:orchestrate plans and runs a squad for a large task; /vanguard:recon maps an unfamiliar codebase; /vanguard:docs fetches current docs; /vanguard:ship-check is the gate before calling work done.",
+    "These rules yield to the user's own instructions and the project's CLAUDE.md.",
+  ].join("\n");
+}

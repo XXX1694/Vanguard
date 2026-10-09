@@ -22,6 +22,7 @@ import {
   pulseBar,
   mcpServer,
   serverLabel,
+  orchestratorRules,
 } from "../hooks/lib";
 import { iconSvg, LOGO_SVG, toolIcon } from "../hooks/icons";
 
@@ -582,4 +583,13 @@ test("a profile kept under the old agent-arena name carries over", async ($, on)
   expect(Object.keys(JSON.parse(files[PROFILE] ?? "{}").sessions)).toContain(
     "sess-1",
   );
+});
+
+describe("orchestrator rules", () => {
+  test("name the plugin's agents and follow the context threshold", () => {
+    const text = orchestratorRules(77);
+    expect(text).toContain("`vanguard:scout`");
+    expect(text).toContain("`vanguard:verifier`");
+    expect(text).toContain("past 77% full");
+  });
 });

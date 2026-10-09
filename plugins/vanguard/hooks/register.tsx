@@ -67,7 +67,7 @@ import {
   xpOf,
   mcpServer,
   newlyUnlocked,
-  ORCHESTRATOR_RULES,
+  orchestratorRules,
   nextAchievement,
   serverLabel,
   successStreak,
@@ -618,58 +618,62 @@ async function handoffPath($: Engine, at: number): Promise<string> {
   return `${home}/.claude/handoffs/${stamp}.md`;
 }
 
-async function compactNow($: Engine): Promise<void> {
+/** Compacts now and says what came of it, for a toast or the command's answer. */
+async function compactNow($: Engine): Promise<string> {
   try {
     const r = await $.session.compact({ instructions: "Prepare a handoff." });
-    if (r.skip) $.ui.toast(`Сжатие отменено: ${r.skip}`);
+    if (r.skip) return `Сжатие отменено: ${r.skip}`;
+    return "Контекст сжат, снимок — в ~/.claude/handoffs/LATEST.md.";
   } catch {
-    $.ui.toast(
-      "Сожму после текущего хода: пока идёт работа, сжатие недоступно.",
-    );
+    return "Сейчас сжать нельзя: идёт работа. Повторите /handoff, когда ответ закончится.";
   }
 }
 
 /** Session start: commands, profile, first readings, the timer and the pane. */
 async function startUp($: Engine): Promise<void> {
   sessionId = await $.session.id().catch(() => "");
-  await $.command.register({
-    name: "vanguard",
-    description:
-      "Открыть Vanguard — штаб агентов: отряд, лимиты, контекст, арсенал и достижения",
-  });
-  await $.command.register({
-    name: "handoff",
-    description: "Сжать контекст, сохранив план, и записать снимок в файл",
-  });
-  const now = await $.clock.now();
-  await update(
-    $,
-    commander,
-    (c: Commander | null) =>
-      c ?? {
-        model: "?",
-        steps: 0,
-        actions: 0,
-        toolCounts: {},
-        startedAt: now,
-      },
+  await quietly(() =>
+    $.command.register({
+      name: "vanguard",
+      description:
+        "Открыть Vanguard — штаб агентов: отряд, лимиты, контекст, арсенал и достижения",
+    }),
   );
-  try {
+  await quietly(() =>
+    $.command.register({
+      name: "handoff",
+      description: "Сжать контекст, сохранив план, и записать снимок в файл",
+    }),
+  );
+  await quietly(async () => {
+    const now = await $.clock.now();
+    await update(
+      $,
+      commander,
+      (c: Commander | null) =>
+        c ?? {
+          model: "?",
+          steps: 0,
+          actions: 0,
+          toolCounts: {},
+          startedAt: now,
+        },
+    );
+  });
+  await quietly(async () => {
     await update($, meters, (old: Meters | null) => old ?? toMeters(null));
     const usage = await $.session.usage();
     await update($, meters, (old: Meters | null) => toMeters(usage, old));
-  } catch {
-    // usage is optional: the pane shows what it has
-  }
-  await syncAgents($);
-  await loadProfile($);
-  await refreshBreakdown($);
-  await refreshArsenal($);
-  await checkAchievements($);
+  });
+  await quietly(() => syncAgents($));
+  await quietly(() => loadProfile($));
+  await quietly(() => refreshBreakdown($));
+  await quietly(() => refreshArsenal($));
+  await quietly(() => checkAchievements($));
   let ticks = 0;
   $.clock.every(1000, () => {
     ticks += 1;
-    void (async () => {
+    void quietly(async () => {
       if (ticks % 3 === 0) await syncAgents($);
       if (ticks % 30 === 0) await refreshBreakdown($);
       if (ticks % 60 === 0) await refreshArsenal($);
@@ -684,7 +688,7 @@ async function startUp($: Engine): Promise<void> {
         ) ||
         (party !== null && now - party.at < CELEBRATE_MS);
       if (isLively || ticks % 30 === 0) $.ui.invalidate("ui.render");
-    })();
+    });
   });
   if (settings.autoOpen)
     void $.ui.open({ id: PANE, title: TITLE }).catch(() => {});
@@ -709,7 +713,7 @@ export const register: Register = (on, options) => {
         ...result.sections.filter((x) => x.id !== "vanguard:orchestrator"),
         {
           id: "vanguard:orchestrator",
-          text: ORCHESTRATOR_RULES,
+          text: orchestratorRules(settings.ctxCritical),
           scope: "session" as const,
         },
       ],
@@ -723,9 +727,7 @@ export const register: Register = (on, options) => {
   });
 
   on("command.run", { command: "handoff" }, async ($) => {
-    await compactNow($);
-
-    return { text: "Контекст сжат, снимок — в ~/.claude/handoffs/LATEST.md." };
+    return { text: await compactNow($) };
   });
 
   on("agent.spawn", async ($, e, next) => {
@@ -1729,7 +1731,7 @@ export const register: Register = (on, options) => {
             key="compact"
             label="Сжать и сохранить"
             variant={ctx === "ok" ? "secondary" : "primary"}
-            onPress={() => compactNow($)}
+            onPress={async () => $.ui.toast(await compactNow($))}
           />
           {snap ? (
             <Button
