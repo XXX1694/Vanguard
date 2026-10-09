@@ -25,6 +25,10 @@ import {
   orchestratorRules,
 } from "../hooks/lib";
 import { iconSvg, LOGO_SVG, toolIcon } from "../hooks/icons";
+import { dict, LANGS, langFromLocale } from "../hooks/i18n";
+
+/** The engine-level tests read the Russian interface. */
+const RU = { options: { language: "ru" } };
 
 const PANE_PROPS = {
   title: "Vanguard",
@@ -64,8 +68,11 @@ describe("helpers", () => {
   test("formats bars, durations and levels", () => {
     expect(bar(50, 10)).toBe("█████░░░░░");
     expect(bar(150, 4)).toBe("████");
-    expect(fmtDuration(65_000)).toBe("1м05с");
-    expect(fmtDuration(3_720_000)).toBe("1ч02м");
+    expect(fmtDuration(65_000)).toBe("1m05s");
+    expect(fmtDuration(65_000, { d: "д", h: "ч", m: "м", s: "с" })).toBe(
+      "1м05с",
+    );
+    expect(fmtDuration(3_720_000)).toBe("1h02m");
     expect(level(5, 0).level).toBe(2);
   });
 
@@ -114,83 +121,91 @@ describe("helpers", () => {
 });
 
 for (const surface of ["terminal", "desktop"] as const) {
-  test(`a spawned subagent shows up in the pane and the band (${surface})`, async ($, on) => {
-    mock.clock(on);
-    on("agent.spawn", () => ({
-      model: "claude-haiku-5-5",
-      agentId: "agent-1",
-    }));
+  test(
+    `a spawned subagent shows up in the pane and the band (${surface})`,
+    RU,
+    async ($, on) => {
+      mock.clock(on);
+      on("agent.spawn", () => ({
+        model: "claude-haiku-5-5",
+        agentId: "agent-1",
+      }));
 
-    await $.agent.spawn({
-      prompt: "Look around",
-      description: "Recon the repo",
-    } as never);
+      await $.agent.spawn({
+        prompt: "Look around",
+        description: "Recon the repo",
+      } as never);
 
-    const pane = await $.ui.mount({
-      plugin: "vanguard",
-      surface,
-      component: "Pane",
-      props: PANE_PROPS,
-      requestId: "vanguard",
-    });
-    expect(
-      await pane.find({ type: "Text", text: "Recon the repo" }),
-    ).toBeDefined();
-    expect(
-      await pane.find({ type: "Text", text: "Субагенты в работе" }),
-    ).toBeDefined();
-    expect(
-      await pane.find({ type: "Button", text: "Сжать и сохранить" }),
-    ).toBeDefined();
+      const pane = await $.ui.mount({
+        plugin: "vanguard",
+        surface,
+        component: "Pane",
+        props: PANE_PROPS,
+        requestId: "vanguard",
+      });
+      expect(
+        await pane.find({ type: "Text", text: "Recon the repo" }),
+      ).toBeDefined();
+      expect(
+        await pane.find({ type: "Text", text: "Субагенты в работе" }),
+      ).toBeDefined();
+      expect(
+        await pane.find({ type: "Button", text: "Сжать и сохранить" }),
+      ).toBeDefined();
 
-    const band = await $.ui.mount({
-      plugin: "vanguard",
-      surface,
-      component: "AbovePrompt",
-      props: { hasSurvey: false } as never,
-    });
-    expect(
-      await band.find({ type: "Text", text: "1 агент в работе" }),
-    ).toBeDefined();
-  });
+      const band = await $.ui.mount({
+        plugin: "vanguard",
+        surface,
+        component: "AbovePrompt",
+        props: { hasSurvey: false } as never,
+      });
+      expect(
+        await band.find({ type: "Text", text: "1 агент в работе" }),
+      ).toBeDefined();
+    },
+  );
 }
 
-test("a compaction keeps the plan and writes a handoff snapshot", async ($, on) => {
-  mock.clock(on);
-  mock.env(on, { HOME: "/home/u" });
-  const written: Record<string, string> = {};
-  let seenInstructions = "";
-  on("session.compact", (_$, e) => {
-    seenInstructions = e.instructions ?? "";
-    return {
-      messages: [
-        { role: "user", text: "SUMMARY: merge PR 9 next", toolUses: [] },
-      ],
-      tokensBefore: 800_000,
-    } as never;
-  });
-  on("session.id", () => ({ value: "sess-1" }));
-  on("session.cwd", () => ({ value: "/repo" }));
-  on("session.model", () => ({ value: "claude-opus-5-5" }));
-  on("fs.write", (_$, e) => {
-    written[e.path] = e.text;
-    return { value: undefined } as never;
-  });
+test(
+  "a compaction keeps the plan and writes a handoff snapshot",
+  RU,
+  async ($, on) => {
+    mock.clock(on);
+    mock.env(on, { HOME: "/home/u" });
+    const written: Record<string, string> = {};
+    let seenInstructions = "";
+    on("session.compact", (_$, e) => {
+      seenInstructions = e.instructions ?? "";
+      return {
+        messages: [
+          { role: "user", text: "SUMMARY: merge PR 9 next", toolUses: [] },
+        ],
+        tokensBefore: 800_000,
+      } as never;
+    });
+    on("session.id", () => ({ value: "sess-1" }));
+    on("session.cwd", () => ({ value: "/repo" }));
+    on("session.model", () => ({ value: "claude-opus-5-5" }));
+    on("fs.write", (_$, e) => {
+      written[e.path] = e.text;
+      return { value: undefined } as never;
+    });
 
-  await $.session.compact({
-    instructions: "focus on deploy",
-    trigger: "manual",
-    messages: [{ role: "user", text: "long chat", toolUses: [] }],
-  } as never);
+    await $.session.compact({
+      instructions: "focus on deploy",
+      trigger: "manual",
+      messages: [{ role: "user", text: "long chat", toolUses: [] }],
+    } as never);
 
-  expect(seenInstructions).toContain("focus on deploy");
-  expect(seenInstructions).toContain("Background agents still running");
-  const paths = Object.keys(written);
-  expect(paths).toContain("/home/u/.claude/handoffs/LATEST.md");
-  expect(written["/home/u/.claude/handoffs/LATEST.md"]).toContain(
-    "SUMMARY: merge PR 9 next",
-  );
-});
+    expect(seenInstructions).toContain("focus on deploy");
+    expect(seenInstructions).toContain("Background agents still running");
+    const paths = Object.keys(written);
+    expect(paths).toContain("/home/u/.claude/handoffs/LATEST.md");
+    expect(written["/home/u/.claude/handoffs/LATEST.md"]).toContain(
+      "SUMMARY: merge PR 9 next",
+    );
+  },
+);
 
 describe("mechanics", () => {
   test("streaks, unlocks and the next achievement", () => {
@@ -231,68 +246,77 @@ describe("mechanics", () => {
 });
 
 for (const surface of ["terminal", "desktop"] as const) {
-  test(`the arsenal highlights a used MCP server and unlocks an achievement (${surface})`, async ($, on) => {
-    mock.clock(on);
-    on(
-      "tool.list",
-      () =>
-        ({
-          value: [
-            { name: "mcp__github__create_pr", description: "PR", mcp: true },
-            { name: "mcp__linear__find", description: "x", mcp: true },
-          ],
-        }) as never,
-    );
-    on(
-      "command.list",
-      () =>
-        ({
-          value: [
-            { name: "graphify", description: "graph", source: "user" },
-            {
-              name: "x:y",
-              description: "d",
-              source: "plugin",
-              plugin: "superplug",
-            },
-          ],
-        }) as never,
-    );
-    on("tool.call", () => ({ result: "ok" }) as never);
-    on("command.register", () => ({ value: undefined }) as never);
-    on("ui.open", () => ({ value: undefined }) as never);
-    on("session.start", () => ({ cwd: "/repo" }) as never);
-    on("session.id", () => ({ value: "sess-now" }) as never);
-    mock.store(on);
-    await $.session.start({ cwd: "/repo", source: "startup" } as never);
-    await $.tool.call({ tool: "mcp__github__create_pr", title: "t" } as never);
+  test(
+    `the arsenal highlights a used MCP server and unlocks an achievement (${surface})`,
+    RU,
+    async ($, on) => {
+      mock.clock(on);
+      on(
+        "tool.list",
+        () =>
+          ({
+            value: [
+              { name: "mcp__github__create_pr", description: "PR", mcp: true },
+              { name: "mcp__linear__find", description: "x", mcp: true },
+            ],
+          }) as never,
+      );
+      on(
+        "command.list",
+        () =>
+          ({
+            value: [
+              { name: "graphify", description: "graph", source: "user" },
+              {
+                name: "x:y",
+                description: "d",
+                source: "plugin",
+                plugin: "superplug",
+              },
+            ],
+          }) as never,
+      );
+      on("tool.call", () => ({ result: "ok" }) as never);
+      on("command.register", () => ({ value: undefined }) as never);
+      on("ui.open", () => ({ value: undefined }) as never);
+      on("session.start", () => ({ cwd: "/repo" }) as never);
+      on("session.id", () => ({ value: "sess-now" }) as never);
+      mock.store(on);
+      await $.session.start({ cwd: "/repo", source: "startup" } as never);
+      await $.tool.call({
+        tool: "mcp__github__create_pr",
+        title: "t",
+      } as never);
 
-    const pane = await $.ui.mount({
-      plugin: "vanguard",
-      surface,
-      component: "Pane",
-      props: { ...PANE_PROPS, bodyColumns: 150 },
-      requestId: "vanguard",
-    });
-    await pane.press({ key: "tab-arsenal" });
-    expect(await pane.find({ type: "Text", text: "Арсенал" })).toBeDefined();
-    expect(await pane.find({ type: "Text", text: "github" })).toBeDefined();
-    expect(await pane.find({ type: "Text", text: "×1" })).toBeDefined();
-    expect(await pane.find({ type: "Text", text: "superplug" })).toBeDefined();
-    await pane.press({ key: "tab-achievements" });
-    expect(await pane.find({ type: "Text", text: "Связной" })).toBeDefined();
-    await pane.press({ key: "tab-overview" });
+      const pane = await $.ui.mount({
+        plugin: "vanguard",
+        surface,
+        component: "Pane",
+        props: { ...PANE_PROPS, bodyColumns: 150 },
+        requestId: "vanguard",
+      });
+      await pane.press({ key: "tab-arsenal" });
+      expect(await pane.find({ type: "Text", text: "Арсенал" })).toBeDefined();
+      expect(await pane.find({ type: "Text", text: "github" })).toBeDefined();
+      expect(await pane.find({ type: "Text", text: "×1" })).toBeDefined();
+      expect(
+        await pane.find({ type: "Text", text: "superplug" }),
+      ).toBeDefined();
+      await pane.press({ key: "tab-achievements" });
+      expect(await pane.find({ type: "Text", text: "Связной" })).toBeDefined();
+      await pane.press({ key: "tab-overview" });
 
-    await pane.unmount();
-    const narrow = await $.ui.mount({
-      plugin: "vanguard",
-      surface,
-      component: "Pane",
-      props: { ...PANE_PROPS, bodyColumns: 60 },
-      requestId: "vanguard",
-    });
-    expect(await narrow.find({ type: "Text", text: "Лимиты" })).toBeDefined();
-  });
+      await pane.unmount();
+      const narrow = await $.ui.mount({
+        plugin: "vanguard",
+        surface,
+        component: "Pane",
+        props: { ...PANE_PROPS, bodyColumns: 60 },
+        requestId: "vanguard",
+      });
+      expect(await narrow.find({ type: "Text", text: "Лимиты" })).toBeDefined();
+    },
+  );
 }
 
 /** Answers `$.fs` from files in memory, as the profile reads and writes them. */
@@ -339,88 +363,109 @@ function startHooks(on: any, id: string) {
   on("ui.toast", () => ({ value: undefined }) as never);
 }
 
-test("an old store profile moves into the shared file, and a section folds", async ($, on) => {
-  mock.clock(on);
-  mock.env(on, { HOME: "/home/u" });
-  const files: Record<string, string> = {};
-  memFs(on, files);
-  mock.store(on, { sessions: { "sess-1": OLD_SESSION } });
-  startHooks(on, "sess-2");
-  await $.session.start({ cwd: "/repo", source: "startup" } as never);
+test(
+  "an old store profile moves into the shared file, and a section folds",
+  RU,
+  async ($, on) => {
+    mock.clock(on);
+    mock.env(on, { HOME: "/home/u" });
+    const files: Record<string, string> = {};
+    memFs(on, files);
+    mock.store(on, { sessions: { "sess-1": OLD_SESSION } });
+    startHooks(on, "sess-2");
+    await $.session.start({ cwd: "/repo", source: "startup" } as never);
 
-  const saved = JSON.parse(files[PROFILE] ?? "{}");
-  expect(Object.keys(saved.sessions)).toEqual(["sess-1"]);
-  expect(saved.unlocked.map((x: { id: string }) => x.id)).toContain("squad");
+    const saved = JSON.parse(files[PROFILE] ?? "{}");
+    expect(Object.keys(saved.sessions)).toEqual(["sess-1"]);
+    expect(saved.unlocked.map((x: { id: string }) => x.id)).toContain("squad");
 
-  const pane = await $.ui.mount({
-    plugin: "vanguard",
-    surface: "desktop",
-    component: "Pane",
-    props: { ...PANE_PROPS, bodyColumns: 150 },
-    requestId: "vanguard",
-  });
-  expect(
-    await pane.find({
-      type: "Text",
-      text: "Сессия №2 · модель… · агенты не запущены",
-    }),
-  ).toBeDefined();
-  await pane.press({ key: "tab-achievements" });
-  expect(await pane.find({ type: "Text", text: "Отряд" })).toBeDefined();
-  expect(
-    await pane.find({
-      type: "Text",
-      text: "За всё время: 2 сессии · 4 агента · 100 выз. · $2.00",
-    }),
-  ).toBeDefined();
+    const pane = await $.ui.mount({
+      plugin: "vanguard",
+      surface: "desktop",
+      component: "Pane",
+      props: { ...PANE_PROPS, bodyColumns: 150 },
+      requestId: "vanguard",
+    });
+    expect(
+      await pane.find({
+        type: "Text",
+        text: "Сессия №2 · модель… · агенты не запущены",
+      }),
+    ).toBeDefined();
+    await pane.press({ key: "tab-achievements" });
+    expect(await pane.find({ type: "Text", text: "Отряд" })).toBeDefined();
+    expect(
+      await pane.find({
+        type: "Text",
+        text: "За всё время: 2 сессии · 4 агента · 100 выз. · $2.00",
+      }),
+    ).toBeDefined();
 
-  await pane.press({ key: "tab-overview" });
-  expect(
-    await pane.find({ type: "Text", text: "Сейчас нет запущенных субагентов" }),
-  ).toBeDefined();
-  await pane.press({ key: "fold-party" });
-  expect(
-    await pane.find({ type: "Text", text: "Сейчас нет запущенных субагентов" }),
-  ).toBeUndefined();
-  expect(JSON.parse(files[PROFILE] ?? "{}").collapsed).toEqual({ party: true });
-});
+    await pane.press({ key: "tab-overview" });
+    expect(
+      await pane.find({
+        type: "Text",
+        text: "Сейчас нет запущенных субагентов",
+      }),
+    ).toBeDefined();
+    await pane.press({ key: "fold-party" });
+    expect(
+      await pane.find({
+        type: "Text",
+        text: "Сейчас нет запущенных субагентов",
+      }),
+    ).toBeUndefined();
+    expect(JSON.parse(files[PROFILE] ?? "{}").collapsed).toEqual({
+      party: true,
+    });
+  },
+);
 
-test("another project's session reads the level from the shared file alone", async ($, on) => {
-  mock.clock(on);
-  mock.env(on, { HOME: "/home/u" });
-  const files: Record<string, string> = {
-    [PROFILE]: JSON.stringify({
-      version: 1,
-      sessions: { "sess-1": OLD_SESSION },
-      unlocked: [{ id: "first", at: 1 }],
-      collapsed: {},
-    }),
-  };
-  memFs(on, files);
-  mock.store(on);
-  startHooks(on, "sess-9");
-  await $.session.start({ cwd: "/other-project", source: "startup" } as never);
+test(
+  "another project's session reads the level from the shared file alone",
+  RU,
+  async ($, on) => {
+    mock.clock(on);
+    mock.env(on, { HOME: "/home/u" });
+    const files: Record<string, string> = {
+      [PROFILE]: JSON.stringify({
+        version: 1,
+        sessions: { "sess-1": OLD_SESSION },
+        unlocked: [{ id: "first", at: 1 }],
+        collapsed: {},
+      }),
+    };
+    memFs(on, files);
+    mock.store(on);
+    startHooks(on, "sess-9");
+    await $.session.start({
+      cwd: "/other-project",
+      source: "startup",
+    } as never);
 
-  const pane = await $.ui.mount({
-    plugin: "vanguard",
-    surface: "desktop",
-    component: "Pane",
-    props: { ...PANE_PROPS, bodyColumns: 150 },
-    requestId: "vanguard",
-  });
-  expect(
-    await pane.find({
-      type: "Text",
-      text: "Сессия №2 · модель… · агенты не запущены",
-    }),
-  ).toBeDefined();
-  // 4 agents done (400) + 100 calls (200) + unlocked first, squad, flawless? (3 × 150)
-  const xp = (await pane.findAll({ type: "Text" }))
-    .map((x: any) => x.text)
-    .find((t: string) => /XP/.test(t));
-  expect(xp).toBeDefined();
-  expect(Number(String(xp).match(/(\d+) XP/)?.[1])).toBeGreaterThanOrEqual(600);
-});
+    const pane = await $.ui.mount({
+      plugin: "vanguard",
+      surface: "desktop",
+      component: "Pane",
+      props: { ...PANE_PROPS, bodyColumns: 150 },
+      requestId: "vanguard",
+    });
+    expect(
+      await pane.find({
+        type: "Text",
+        text: "Сессия №2 · модель… · агенты не запущены",
+      }),
+    ).toBeDefined();
+    // 4 agents done (400) + 100 calls (200) + unlocked first, squad, flawless? (3 × 150)
+    const xp = (await pane.findAll({ type: "Text" }))
+      .map((x: any) => x.text)
+      .find((t: string) => /XP/.test(t));
+    expect(xp).toBeDefined();
+    expect(Number(String(xp).match(/(\d+) XP/)?.[1])).toBeGreaterThanOrEqual(
+      600,
+    );
+  },
+);
 
 test(
   "settings hide sections",
@@ -441,149 +486,161 @@ test(
 );
 
 for (const surface of ["terminal", "desktop"] as const) {
-  test(`the context tab breaks the window down (${surface})`, async ($, on) => {
-    mock.clock(on);
-    on("session.start", () => ({ cwd: "/repo" }) as never);
-    on("session.id", () => ({ value: "s" }) as never);
-    on("command.register", () => ({ value: undefined }) as never);
-    on("ui.open", () => ({ value: undefined }) as never);
-    on(
-      "session.usage",
-      () =>
-        ({
-          value: {
-            startedAt: 0,
-            rateLimits: [],
-            context: {
-              window: 1_000_000,
-              breakdown: {
-                categories: [
-                  {
-                    name: "System prompt",
-                    tokens: 12_000,
-                    color: "promptBorder",
-                    isDeferred: false,
-                    kind: "used",
-                  },
-                  {
-                    name: "Messages",
-                    tokens: 200_000,
-                    color: "permission",
-                    isDeferred: false,
-                    kind: "used",
-                  },
-                  {
-                    name: "Autocompact buffer",
-                    tokens: 33_000,
-                    color: "inactive",
-                    isDeferred: false,
-                    kind: "buffer",
-                  },
-                  {
-                    name: "Free space",
-                    tokens: 755_000,
-                    color: "inactive",
-                    isDeferred: false,
-                    kind: "free",
-                  },
-                ],
-                totalTokens: 212_000,
-                maxTokens: 1_000_000,
-                rawMaxTokens: 1_000_000,
-                percentage: 21,
-                gridRows: [],
-                model: "m",
-                memoryFiles: [
-                  {
-                    path: "/Users/me/.claude/CLAUDE.md",
-                    type: "User",
-                    tokens: 900,
-                  },
-                ],
-                mcpTools: [
-                  {
-                    name: "mcp__abc__x",
-                    serverName: "claude.ai Gmail",
-                    tokens: 4000,
-                    isLoaded: true,
-                  },
-                ],
-                agents: [],
+  test(
+    `the context tab breaks the window down (${surface})`,
+    RU,
+    async ($, on) => {
+      mock.clock(on);
+      on("session.start", () => ({ cwd: "/repo" }) as never);
+      on("session.id", () => ({ value: "s" }) as never);
+      on("command.register", () => ({ value: undefined }) as never);
+      on("ui.open", () => ({ value: undefined }) as never);
+      on(
+        "session.usage",
+        () =>
+          ({
+            value: {
+              startedAt: 0,
+              rateLimits: [],
+              context: {
+                window: 1_000_000,
+                breakdown: {
+                  categories: [
+                    {
+                      name: "System prompt",
+                      tokens: 12_000,
+                      color: "promptBorder",
+                      isDeferred: false,
+                      kind: "used",
+                    },
+                    {
+                      name: "Messages",
+                      tokens: 200_000,
+                      color: "permission",
+                      isDeferred: false,
+                      kind: "used",
+                    },
+                    {
+                      name: "Autocompact buffer",
+                      tokens: 33_000,
+                      color: "inactive",
+                      isDeferred: false,
+                      kind: "buffer",
+                    },
+                    {
+                      name: "Free space",
+                      tokens: 755_000,
+                      color: "inactive",
+                      isDeferred: false,
+                      kind: "free",
+                    },
+                  ],
+                  totalTokens: 212_000,
+                  maxTokens: 1_000_000,
+                  rawMaxTokens: 1_000_000,
+                  percentage: 21,
+                  gridRows: [],
+                  model: "m",
+                  memoryFiles: [
+                    {
+                      path: "/Users/me/.claude/CLAUDE.md",
+                      type: "User",
+                      tokens: 900,
+                    },
+                  ],
+                  mcpTools: [
+                    {
+                      name: "mcp__abc__x",
+                      serverName: "claude.ai Gmail",
+                      tokens: 4000,
+                      isLoaded: true,
+                    },
+                  ],
+                  agents: [],
+                },
               },
             },
-          },
-        }) as never,
-    );
-    mock.store(on);
-    await $.session.start({ cwd: "/repo", source: "startup" } as never);
+          }) as never,
+      );
+      mock.store(on);
+      await $.session.start({ cwd: "/repo", source: "startup" } as never);
+
+      const pane = await $.ui.mount({
+        plugin: "vanguard",
+        surface,
+        component: "Pane",
+        props: PANE_PROPS,
+        requestId: "vanguard",
+      });
+      await pane.press({ key: "tab-context" });
+      expect(
+        await pane.find({ type: "Text", text: "Из чего состоит контекст" }),
+      ).toBeDefined();
+      expect(await pane.find({ type: "Text", text: "Messages" })).toBeDefined();
+      expect(
+        await pane.find({ type: "Text", text: "claude.ai Gmail" }),
+      ).toBeDefined();
+      expect(
+        await pane.find({ type: "Text", text: "~/.claude/CLAUDE.md" }),
+      ).toBeDefined();
+    },
+  );
+}
+
+test(
+  "an unlock raises a banner, and animations stay within the frame budget",
+  RU,
+  async ($, on) => {
+    mock.clock(on);
+    on("ui.toast", () => ({ value: undefined }) as never);
+    let n = 0;
+    on("agent.spawn", () => ({
+      model: "claude-haiku-5-5",
+      agentId: `agent-${++n}`,
+    }));
+    for (let i = 0; i < 12; i++)
+      await $.agent.spawn({ prompt: "p", description: `Task ${i}` } as never);
 
     const pane = await $.ui.mount({
       plugin: "vanguard",
-      surface,
+      surface: "desktop",
       component: "Pane",
-      props: PANE_PROPS,
+      props: { ...PANE_PROPS, bodyColumns: 150 },
       requestId: "vanguard",
     });
-    await pane.press({ key: "tab-context" });
     expect(
-      await pane.find({ type: "Text", text: "Из чего состоит контекст" }),
+      await pane.find({ type: "Text", text: "Достижение открыто" }),
     ).toBeDefined();
-    expect(await pane.find({ type: "Text", text: "Messages" })).toBeDefined();
-    expect(
-      await pane.find({ type: "Text", text: "claude.ai Gmail" }),
-    ).toBeDefined();
-    expect(
-      await pane.find({ type: "Text", text: "~/.claude/CLAUDE.md" }),
-    ).toBeDefined();
-  });
-}
+    const svgs = await pane.findAll({ type: "Svg" });
+    const live = svgs.filter((x: any) => x.props?.isInteractive === true);
+    expect(live.length).toBeGreaterThan(0);
+    expect(live.length).toBeLessThanOrEqual(8);
+  },
+);
 
-test("an unlock raises a banner, and animations stay within the frame budget", async ($, on) => {
-  mock.clock(on);
-  on("ui.toast", () => ({ value: undefined }) as never);
-  let n = 0;
-  on("agent.spawn", () => ({
-    model: "claude-haiku-5-5",
-    agentId: `agent-${++n}`,
-  }));
-  for (let i = 0; i < 12; i++)
-    await $.agent.spawn({ prompt: "p", description: `Task ${i}` } as never);
-
-  const pane = await $.ui.mount({
-    plugin: "vanguard",
-    surface: "desktop",
-    component: "Pane",
-    props: { ...PANE_PROPS, bodyColumns: 150 },
-    requestId: "vanguard",
-  });
-  expect(
-    await pane.find({ type: "Text", text: "Достижение открыто" }),
-  ).toBeDefined();
-  const svgs = await pane.findAll({ type: "Svg" });
-  const live = svgs.filter((x: any) => x.props?.isInteractive === true);
-  expect(live.length).toBeGreaterThan(0);
-  expect(live.length).toBeLessThanOrEqual(8);
-});
-
-test("a profile kept under the old agent-arena name carries over", async ($, on) => {
-  mock.clock(on);
-  mock.env(on, { HOME: "/home/u" });
-  const files: Record<string, string> = {
-    "/home/u/.claude/agent-arena/profile.json": JSON.stringify({
-      version: 1,
-      sessions: { "sess-1": OLD_SESSION },
-      unlocked: [],
-      collapsed: {},
-    }),
-  };
-  memFs(on, files);
-  mock.store(on);
-  startHooks(on, "sess-3");
-  await $.session.start({ cwd: "/repo", source: "startup" } as never);
-  expect(Object.keys(JSON.parse(files[PROFILE] ?? "{}").sessions)).toContain(
-    "sess-1",
-  );
-});
+test(
+  "a profile kept under the old agent-arena name carries over",
+  RU,
+  async ($, on) => {
+    mock.clock(on);
+    mock.env(on, { HOME: "/home/u" });
+    const files: Record<string, string> = {
+      "/home/u/.claude/agent-arena/profile.json": JSON.stringify({
+        version: 1,
+        sessions: { "sess-1": OLD_SESSION },
+        unlocked: [],
+        collapsed: {},
+      }),
+    };
+    memFs(on, files);
+    mock.store(on);
+    startHooks(on, "sess-3");
+    await $.session.start({ cwd: "/repo", source: "startup" } as never);
+    expect(Object.keys(JSON.parse(files[PROFILE] ?? "{}").sessions)).toContain(
+      "sess-1",
+    );
+  },
+);
 
 describe("orchestrator rules", () => {
   test("name the plugin's agents and follow the context threshold", () => {
@@ -593,3 +650,99 @@ describe("orchestrator rules", () => {
     expect(text).toContain("past 77% full");
   });
 });
+
+describe("languages", () => {
+  test("every language gives every message", () => {
+    const keys = Object.keys(dict("en")).sort();
+    for (const l of LANGS) {
+      const d = dict(l.id);
+      expect(Object.keys(d).sort()).toEqual(keys);
+      expect(Object.keys(d.ach).sort()).toEqual(
+        Object.keys(dict("en").ach).sort(),
+      );
+      expect(typeof d.agentsWorking(2)).toBe("string");
+    }
+  });
+
+  test("the locale picks the language", () => {
+    expect(langFromLocale("ru_RU.UTF-8")).toBe("ru");
+    expect(langFromLocale("zh-Hans")).toBe("zh");
+    expect(langFromLocale("pt-BR")).toBe("pt");
+    expect(langFromLocale("sv_SE")).toBe("en");
+    expect(langFromLocale(undefined)).toBe("en");
+  });
+});
+
+for (const surface of ["terminal", "desktop"] as const) {
+  test(
+    `the pane speaks the chosen language and the switcher changes it (${surface})`,
+    { options: { language: "en" } },
+    async ($, on) => {
+      mock.clock(on);
+      mock.env(on, { HOME: "/home/u" });
+      memFs(on, {});
+      const pane = await $.ui.mount({
+        plugin: "vanguard",
+        surface,
+        component: "Pane",
+        props: { ...PANE_PROPS, bodyColumns: 150 },
+        requestId: "vanguard",
+      });
+      expect(
+        await pane.find({ type: "Text", text: "Subagents at work" }),
+      ).toBeDefined();
+      expect(
+        await pane.find({ type: "Text", text: "No subagents running" }),
+      ).toBeDefined();
+      if (surface === "desktop") {
+        await pane.select({ key: "lang", value: "zh" });
+      } else {
+        // the terminal cycles: en → ru → zh
+        await pane.press({ key: "lang" });
+        await pane.press({ key: "lang" });
+      }
+      expect(
+        await pane.find({ type: "Text", text: "工作中的子智能体" }),
+      ).toBeDefined();
+    },
+  );
+}
+
+for (const l of LANGS)
+  test(
+    `every tab draws in ${l.name}`,
+    { options: { language: l.id } },
+    async ($, on) => {
+      mock.clock(on);
+      mock.env(on, { HOME: "/home/u" });
+      memFs(on, {});
+      on("agent.spawn", () => ({
+        model: "claude-haiku-5-5",
+        agentId: "agent-1",
+      }));
+      await $.agent.spawn({ prompt: "p", description: "Task" } as never);
+      for (const surface of ["terminal", "desktop"] as const) {
+        const pane = await $.ui.mount({
+          plugin: "vanguard",
+          surface,
+          component: "Pane",
+          props: {
+            ...PANE_PROPS,
+            bodyColumns: surface === "terminal" ? 34 : 150,
+          },
+          requestId: "vanguard",
+        });
+        for (const tab of [
+          "overview",
+          "context",
+          "arsenal",
+          "achievements",
+          "log",
+        ]) {
+          await pane.press({ key: `tab-${tab}` });
+          expect(await pane.drawn()).toBeDefined();
+        }
+        await pane.unmount();
+      }
+    },
+  );
