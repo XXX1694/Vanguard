@@ -83,6 +83,7 @@ import {
   meterColor,
   modelBadge,
   pad,
+  percentLeft,
   PRESERVE_INSTRUCTIONS,
   pulseBar,
   pushSample,
@@ -1747,8 +1748,14 @@ export const register: Register = (on, options) => {
     const fivePoints = samples.flatMap((s) =>
       s.five === undefined ? [] : [{ at: s.at, value: s.five }],
     );
+    /** A reset already behind us: no reply since, so nothing of the new window is used. */
+    const isPastReset = (resetsAt?: string) => {
+      const at = resetsAt ? Date.parse(resetsAt) : NaN;
+      return !Number.isNaN(at) && at <= now;
+    };
     const rateNote = (kind: string, resetsAt?: string) => {
       const at = resetsAt ? Date.parse(resetsAt) : NaN;
+      if (isPastReset(resetsAt)) return T.resetPassed(fmtClock(at));
       const reset = Number.isNaN(at)
         ? ""
         : T.resets(fmtReset(at, now, LOCALE[L]), dur(at - now));
@@ -1761,7 +1768,14 @@ export const register: Register = (on, options) => {
     const resBody = (
       <Box flexDirection="column" rowGap={space.inner}>
         {ctxUsed !== undefined
-          ? meter("ctx", "layers", T.ctx, 100 - ctxUsed, ctxNote, ctxSeries)
+          ? meter(
+              "ctx",
+              "layers",
+              T.ctx,
+              percentLeft(ctxUsed),
+              ctxNote,
+              ctxSeries,
+            )
           : line(
               "ctx",
               icon("layers", "inactive"),
@@ -1772,7 +1786,7 @@ export const register: Register = (on, options) => {
             r.kind,
             r.kind === "seven_day" ? "calendar" : "gauge",
             rateLabel(r.kind, T.rate),
-            100 - r.percentUsed,
+            isPastReset(r.resetsAt) ? 100 : percentLeft(r.percentUsed),
             rateNote(r.kind, r.resetsAt),
           ),
         )}
@@ -2847,7 +2861,7 @@ export const register: Register = (on, options) => {
         })}
         {m?.contextPercent !== undefined ? icon("layers", ctxColor, "c") : null}
         {m?.contextPercent !== undefined ? (
-          <Text color={ctxColor}>{T.bandContext(100 - m.contextPercent)}</Text>
+          <Text color={ctxColor}>{T.bandContext(percentLeft(m.contextPercent))}</Text>
         ) : null}
         {m?.contextPercent !== undefined && ctx !== "ok" ? (
           // One key from the focused band: h compacts and writes the snapshot.
@@ -2861,7 +2875,7 @@ export const register: Register = (on, options) => {
         ) : null}
         {five ? icon("gauge", "subtle", "f") : null}
         {five ? (
-          <Text dimColor>{T.bandFive(Math.round(100 - five.percentUsed))}</Text>
+          <Text dimColor>{T.bandFive(Math.round(percentLeft(five.percentUsed)))}</Text>
         ) : null}
         {m?.usd !== undefined ? icon("coins", "subtle", "u") : null}
         {m?.usd !== undefined ? (

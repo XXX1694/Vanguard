@@ -30,6 +30,8 @@ import {
   trimHeroes,
   guardStep,
   guardThresholds,
+  percentLeft,
+  fmtClock,
 } from "../hooks/lib";
 import type { Hero } from "../types";
 import { iconSvg, LOGO_SVG, toolIcon } from "../hooks/icons";
@@ -912,6 +914,78 @@ test(
       props: { hasSurvey: false } as never,
     });
     expect(await band.find({ type: "Button", key: "handoff" })).toBeDefined();
+  },
+);
+
+describe("limits", () => {
+  test("the forecast reads only the readings since the last reset", () => {
+    const m = 60_000;
+    // 80% before a reset, then climbing from 5% by 1% a minute
+    const points = [
+      { at: 0, value: 80 },
+      { at: 5 * m, value: 82 },
+      { at: 10 * m, value: 5 },
+      { at: 20 * m, value: 15 },
+    ];
+    expect(etaToFull(points, 20 * m)).toBe(20 * m + 85 * m);
+    // too little since the reset to tell
+    expect(etaToFull(points.slice(0, 3), 10 * m)).toBeUndefined();
+    // already at the limit: no forecast
+    expect(
+      etaToFull(
+        [
+          { at: 0, value: 90 },
+          { at: 10 * m, value: 100 },
+        ],
+        10 * m,
+      ),
+    ).toBeUndefined();
+  });
+
+  test("what is left stays within 0 and 100", () => {
+    expect(percentLeft(23.5)).toBe(76.5);
+    expect(percentLeft(120)).toBe(0);
+    expect(percentLeft(-3)).toBe(100);
+    expect(percentLeft(Number.NaN)).toBe(100);
+  });
+});
+
+test(
+  "a passed reset reads as a fresh window, and an exceeded budget as empty",
+  { options: { language: "en" } },
+  async ($, on) => {
+    const now = Date.UTC(2026, 9, 9, 12, 0);
+    mock.clock(on, { now });
+    on("session.measure", (_$, e) => ({ changed: e.changed }));
+    const resetAt = Date.UTC(2026, 9, 9, 11, 0);
+    await ($ as any).session.measure({
+      context: { window: 200_000, tokens: 20_000, percent: 10 },
+      rateLimits: [
+        {
+          kind: "five_hour",
+          percentUsed: 97,
+          resetsAt: new Date(resetAt).toISOString(),
+        },
+        { kind: "spend_limit", percentUsed: 120 },
+      ],
+      changed: ["context", "rateLimits"],
+    });
+    const pane = await $.ui.mount({
+      plugin: "vanguard",
+      surface: "terminal",
+      component: "Pane",
+      props: { ...PANE_PROPS, bodyColumns: 150 },
+      requestId: "vanguard",
+    });
+    const texts = (await pane.findAll({ type: "Text" })).map((x: any) =>
+      String(x.text),
+    );
+    expect(texts).toContain(
+      `reset at ${fmtClock(resetAt)} · fresh reading on the next reply`,
+    );
+    expect(texts.some((t: string) => t.trim() === "3%")).toBe(false);
+    expect(texts.some((t: string) => /^-\d+%/.test(t.trim()))).toBe(false);
+    expect(texts.some((t: string) => t.trim() === "0%")).toBe(true);
   },
 );
 

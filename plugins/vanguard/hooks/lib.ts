@@ -74,6 +74,13 @@ export function bar(percent: number, width: number): string {
   return "█".repeat(full) + "░".repeat(width - full);
 }
 
+/** What is left of a window, 0–100: a spend limit can report more than 100 used. */
+export function percentLeft(percentUsed: number): number {
+  if (!Number.isFinite(percentUsed)) return 100;
+
+  return Math.max(0, Math.min(100, 100 - percentUsed));
+}
+
 /** Colour for a "how much is left" meter. */
 export function meterColor(percentLeft: number): string {
   if (percentLeft < 20) return "error";
@@ -397,12 +404,17 @@ export function etaToFull(
   points: { at: number; value: number }[],
   now: number,
 ): number | undefined {
-  const recent = points.filter((p) => now - p.at <= 3_600_000);
+  const inHour = points.filter((p) => now - p.at <= 3_600_000);
+  // A drop is a window reset: only the readings after the last one count.
+  let start = 0;
+  for (let i = 1; i < inHour.length; i++)
+    if ((inHour[i]?.value ?? 0) < (inHour[i - 1]?.value ?? 0)) start = i;
+  const recent = inHour.slice(start);
   const first = recent[0];
   const last = recent[recent.length - 1];
   if (!first || !last || last.at - first.at < 5 * 60_000) return undefined;
   const slope = (last.value - first.value) / (last.at - first.at);
-  if (slope <= 0) return undefined;
+  if (slope <= 0 || last.value >= 100) return undefined;
 
   return now + (100 - last.value) / slope;
 }
