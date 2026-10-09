@@ -30,7 +30,7 @@ export function modelBadge(model: string): ModelBadge {
 
   return hit
     ? hit[1]
-    : { key: "other", label: "Модель", icon: "bot", color: "text" };
+    : { key: "other", label: "Model", icon: "bot", color: "text" };
 }
 
 export function shortModel(model: string): string {
@@ -49,14 +49,6 @@ const EFFORT_LEVEL: Record<string, number> = {
   max: 5,
 };
 
-const EFFORT_LABEL: Record<string, string> = {
-  low: "низкое",
-  medium: "среднее",
-  high: "высокое",
-  xhigh: "очень высокое",
-  max: "максимум",
-};
-
 /** Five dots filled to the effort level: `●●●○○`. */
 export function effortDots(effort?: string): string {
   const n = effort ? EFFORT_LEVEL[effort] : undefined;
@@ -65,10 +57,14 @@ export function effortDots(effort?: string): string {
   return "●".repeat(n) + "○".repeat(5 - n);
 }
 
-export function effortLabel(effort?: string): string {
+/** The effort level in words, from the language's table (`labels`). */
+export function effortLabel(
+  effort: string | undefined,
+  labels: Record<string, string> = {},
+): string {
   if (!effort) return "—";
 
-  return EFFORT_LABEL[effort] ?? effort;
+  return labels[effort] ?? effort;
 }
 
 export function bar(percent: number, width: number): string {
@@ -86,17 +82,20 @@ export function meterColor(percentLeft: number): string {
   return "success";
 }
 
-export function fmtDuration(ms: number): string {
+export type Units = { d: string; h: string; m: string; s: string };
+const EN_UNITS: Units = { d: "d", h: "h", m: "m", s: "s" };
+
+export function fmtDuration(ms: number, u: Units = EN_UNITS): string {
   const s = Math.max(0, Math.floor(ms / 1000));
   const d = Math.floor(s / 86400);
   const h = Math.floor((s % 86400) / 3600);
   const m = Math.floor((s % 3600) / 60);
   const sec = s % 60;
-  if (d > 0) return `${d}д${h}ч`;
-  if (h > 0) return `${h}ч${String(m).padStart(2, "0")}м`;
-  if (m > 0) return `${m}м${String(sec).padStart(2, "0")}с`;
+  if (d > 0) return `${d}${u.d}${h}${u.h}`;
+  if (h > 0) return `${h}${u.h}${String(m).padStart(2, "0")}${u.m}`;
+  if (m > 0) return `${m}${u.m}${String(sec).padStart(2, "0")}${u.s}`;
 
-  return `${sec}с`;
+  return `${sec}${u.s}`;
 }
 
 export function fmtTokens(n: number): string {
@@ -173,8 +172,12 @@ export function topTools(
     .join(" · ");
 }
 
-/** When a rate window resets: today's `14:30`, or `пт 09:00` further out. */
-export function fmtReset(resetsAt: number, now: number): string {
+/** When a rate window resets: today's `14:30`, or `Fri 09:00` further out, in `locale`. */
+export function fmtReset(
+  resetsAt: number,
+  now: number,
+  locale = "en-US",
+): string {
   const at = new Date(resetsAt);
   const time = fmtClock(resetsAt);
   if (
@@ -182,9 +185,14 @@ export function fmtReset(resetsAt: number, now: number): string {
     at.getDate() === new Date(now).getDate()
   )
     return time;
-  const days = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
+  let day: string;
+  try {
+    day = new Intl.DateTimeFormat(locale, { weekday: "short" }).format(at);
+  } catch {
+    day = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][at.getDay()] ?? "";
+  }
 
-  return `${days[at.getDay()]} ${time}`;
+  return `${day} ${time}`;
 }
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -203,12 +211,11 @@ export function pad(text: string, width: number): string {
   return text.length >= width ? text : text + " ".repeat(width - text.length);
 }
 
-export function rateLabel(kind: string): string {
-  if (kind === "five_hour") return "Лимит 5ч";
-  if (kind === "seven_day") return "Лимит 7д";
-  if (kind === "spend_limit") return "Бюджет";
-
-  return kind;
+export function rateLabel(
+  kind: string,
+  labels: Record<string, string> = {},
+): string {
+  return labels[kind] ?? kind;
 }
 
 /** Context fill at which Vanguard warns, and at which it urges a handoff. */
@@ -281,10 +288,6 @@ export function handoffMarkdown(h: HandoffInput): string {
   ];
 
   return lines.join("\n");
-}
-
-export function resumePrompt(path: string): string {
-  return `Прочитай ${path} и продолжи работу с пункта «next steps». Сначала проверь открытые PR и фоновых агентов.`;
 }
 
 /** Russian plural: `plural(3, ["агент", "агента", "агентов"])` → `агента`. */
@@ -408,68 +411,68 @@ export type Achievement = {
 export const ACHIEVEMENTS: Achievement[] = [
   {
     id: "first",
-    title: "Первый вылет",
-    hint: "Запустить субагента",
+    title: "First sortie",
+    hint: "Launch a subagent",
     progress: (s) => [s.agentsTotal, 1],
   },
   {
     id: "squad",
-    title: "Отряд",
-    hint: "3 субагента одновременно",
+    title: "Squad",
+    hint: "3 subagents at once",
     progress: (s) => [s.peakParallel, 3],
   },
   {
     id: "legion",
-    title: "Легион",
-    hint: "10 субагентов за сессию",
+    title: "Legion",
+    hint: "10 subagents in a session",
     progress: (s) => [s.agentsTotal, 10],
   },
   {
     id: "flawless",
-    title: "Без потерь",
-    hint: "5 успешных субагентов подряд",
+    title: "Flawless",
+    hint: "5 successful subagents in a row",
     progress: (s) => [s.streak, 5],
   },
   {
     id: "connector",
-    title: "Связной",
-    hint: "Вызвать инструмент MCP",
+    title: "Connector",
+    hint: "Call an MCP tool",
     progress: (s) => [s.mcpCalls, 1],
   },
   {
     id: "polyglot",
-    title: "Полиглот",
-    hint: "Использовать 3 разных MCP-сервера",
+    title: "Polyglot",
+    hint: "Use 3 different MCP servers",
     progress: (s) => [s.mcpServersUsed, 3],
   },
   {
     id: "skillful",
-    title: "Мастер скиллов",
-    hint: "3 запуска скиллов",
+    title: "Skill master",
+    hint: "Run skills 3 times",
     progress: (s) => [s.skillUses, 3],
   },
   {
     id: "scholar",
-    title: "Книжный червь",
-    hint: "Прочитать 50 файлов",
+    title: "Bookworm",
+    hint: "Read 50 files",
     progress: (s) => [s.reads, 50],
   },
   {
     id: "builder",
-    title: "Строитель",
-    hint: "25 правок файлов",
+    title: "Builder",
+    hint: "Make 25 file edits",
     progress: (s) => [s.edits, 25],
   },
   {
     id: "shell",
-    title: "Повелитель shell",
-    hint: "50 команд в терминале",
+    title: "Shell master",
+    hint: "Run 50 terminal commands",
     progress: (s) => [s.bashes, 50],
   },
   {
     id: "keeper",
-    title: "Хранитель",
-    hint: "Сохранить снимок контекста",
+    title: "Keeper",
+    hint: "Save a context snapshot",
     progress: (s) => [s.snapshots, 1],
   },
 ];

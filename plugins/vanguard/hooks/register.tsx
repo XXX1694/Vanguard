@@ -74,12 +74,10 @@ import {
   meterColor,
   modelBadge,
   pad,
-  plural,
   PRESERVE_INSTRUCTIONS,
   pulseBar,
   pushSample,
   rateLabel,
-  resumePrompt,
   shortModel,
   sparkline,
   spinnerFrame,
@@ -87,6 +85,15 @@ import {
   toolLabel,
   topTools,
 } from "./lib";
+import {
+  dict,
+  isLang,
+  LANGS,
+  langFromLocale,
+  LOCALE,
+  type Dict,
+  type Lang,
+} from "./i18n";
 
 type Engine = EngineInterface;
 
@@ -112,6 +119,7 @@ const celebration = atom(
   { plugin: "vanguard", key: "celebration" } as const,
   null,
 );
+const langPick = atom({ plugin: "vanguard", key: "lang" } as const, null);
 const levelSeen = atom({ plugin: "vanguard", key: "levelSeen" } as const, 0);
 
 /** How long a banner stays, and a finished agent's check keeps popping. */
@@ -122,6 +130,7 @@ const FRAME_BUDGET = 8;
 
 /** The mod's settings, from the manifest's userConfig (the config menu). */
 type Settings = {
+  language: string;
   orchestrator: boolean;
   autoOpen: boolean;
   animations: boolean;
@@ -133,6 +142,7 @@ type Settings = {
   showLog: boolean;
 };
 const DEFAULTS: Settings = {
+  language: "auto",
   orchestrator: true,
   autoOpen: true,
   animations: true,
@@ -164,6 +174,7 @@ type Profile = {
   unlocked: Unlock[];
   collapsed: Record<string, boolean>;
   tab?: Tab;
+  lang?: string;
 };
 const EMPTY_PROFILE: Profile = {
   version: 1,
@@ -184,6 +195,7 @@ async function readProfile($: Engine): Promise<Profile> {
       unlocked: raw.unlocked ?? [],
       collapsed: raw.collapsed ?? {},
       tab: raw.tab,
+      lang: raw.lang,
     };
   } catch {
     return EMPTY_PROFILE;
@@ -223,17 +235,42 @@ const DONE_STATUSES: Record<string, HeroStatus> = {
   failed: "failed",
   killed: "stopped",
 };
-const STATUS_VIEW: Record<
-  HeroStatus,
-  { icon: IconName; color: string; label: string }
-> = {
-  running: { icon: "activity", color: "warning", label: "В работе" },
-  done: { icon: "check", color: "success", label: "Готово" },
-  failed: { icon: "x", color: "error", label: "Ошибка" },
-  stopped: { icon: "stop", color: "inactive", label: "Остановлен" },
+const STATUS_VIEW: Record<HeroStatus, { icon: IconName; color: string }> = {
+  running: { icon: "activity", color: "warning" },
+  done: { icon: "check", color: "success" },
+  failed: { icon: "x", color: "error" },
+  stopped: { icon: "stop", color: "inactive" },
 };
-const CARD_WIDTH = 38;
-const AGENT_FORMS: [string, string, string] = ["агент", "агента", "агентов"];
+
+/** The language the system names (LC_ALL, LC_MESSAGES, LANG), read at session start. */
+let systemLang: Lang = "en";
+
+/** The pane's language: the pick in the pane, else the setting, else the system's. */
+function langOf(picked: string | null | undefined): Lang {
+  if (isLang(picked)) return picked;
+  if (isLang(settings.language)) return settings.language;
+  return systemLang;
+}
+
+/** The language for text written outside a drawing (toasts, command answers). */
+async function textsFor($: Engine): Promise<Dict> {
+  return dict(langOf(await read($, langPick).catch(() => null)));
+}
+
+async function detectSystemLang($: Engine): Promise<void> {
+  const lcAll = await $.env.get("LC_ALL").catch(() => undefined);
+  const lcMessages = await $.env.get("LC_MESSAGES").catch(() => undefined);
+  const lang = await $.env.get("LANG").catch(() => undefined);
+  let locale = lcAll || lcMessages || lang || undefined;
+  if (!locale) {
+    try {
+      locale = new Intl.DateTimeFormat().resolvedOptions().locale;
+    } catch {
+      // English, then
+    }
+  }
+  systemLang = langFromLocale(locale);
+}
 
 /**
  * Runs bookkeeping that must never stand in the way: a failure here is
@@ -247,15 +284,17 @@ async function quietly(work: () => Promise<unknown>): Promise<void> {
   }
 }
 
+/** A journal line, kept as a message key and its arguments so it reads in any language. */
 async function addLog(
   $: Engine,
   icon: IconName,
   color: string,
-  text: string,
+  k: string,
+  ...a: (string | number | boolean)[]
 ): Promise<void> {
   const at = await $.clock.now();
   await update($, log, (list: LogLine[]) =>
-    [...list, { at, icon, color, text }].slice(-40),
+    [...list, { at, icon, color, text: "", msg: { k, a } }].slice(-40),
   );
 }
 
@@ -531,6 +570,7 @@ async function loadProfile($: Engine): Promise<void> {
       unionUnlocks(old ?? [], p.unlocked),
     );
     if (p.tab) await update($, tab, () => p.tab as Tab);
+    if (isLang(p.lang)) await update($, langPick, () => p.lang as string);
     await update($, collapsed, (old: Record<string, boolean> | undefined) => ({
       ...p.collapsed,
       ...(old ?? {}),
@@ -565,15 +605,10 @@ async function checkAchievements($: Engine): Promise<void> {
     await update(
       $,
       celebration,
-      (): Celebration => ({
-        kind: "level",
-        title: `Уровень ${lvl}`,
-        note: "Новый уровень за всё время",
-        at,
-      }),
+      (): Celebration => ({ kind: "level", level: lvl, at }),
     );
-    $.ui.toast(`Новый уровень: ${lvl}`);
-    await addLog($, "trophy", "warning", `Новый уровень: ${lvl}`);
+    $.ui.toast((await textsFor($)).newLevel(lvl));
+    await addLog($, "trophy", "warning", "newLevel", lvl);
     if (settings.sound)
       void $.audio
         .play({ asset: "sounds/achievement.wav" }, { gain: 0.6 })
@@ -593,17 +628,15 @@ async function checkAchievements($: Engine): Promise<void> {
       celebration,
       (): Celebration => ({
         kind: "achievement",
-        title:
-          fresh.length > 1
-            ? `${first.title} и ещё ${fresh.length - 1}`
-            : first.title,
-        note: first.hint,
+        ids: fresh.map((a) => a.id),
         at,
       }),
     );
+  const T = await textsFor($);
   for (const a of fresh) {
-    $.ui.toast(`Достижение открыто: ${a.title} — ${a.hint}`);
-    await addLog($, "medal", "warning", `Достижение: ${a.title}`);
+    const text = T.ach[a.id] ?? a;
+    $.ui.toast(T.achToast(text.title, text.hint));
+    await addLog($, "medal", "warning", "logAch", a.id);
   }
   if (settings.sound)
     void $.audio
@@ -620,29 +653,32 @@ async function handoffPath($: Engine, at: number): Promise<string> {
 
 /** Compacts now and says what came of it, for a toast or the command's answer. */
 async function compactNow($: Engine): Promise<string> {
+  const T = await textsFor($);
   try {
     const r = await $.session.compact({ instructions: "Prepare a handoff." });
-    if (r.skip) return `Сжатие отменено: ${r.skip}`;
-    return "Контекст сжат, снимок — в ~/.claude/handoffs/LATEST.md.";
+    if (r.skip) return T.compactSkipped(r.skip);
+    return T.compactDone;
   } catch {
-    return "Сейчас сжать нельзя: идёт работа. Повторите /handoff, когда ответ закончится.";
+    return T.compactBusy;
   }
 }
 
 /** Session start: commands, profile, first readings, the timer and the pane. */
 async function startUp($: Engine): Promise<void> {
   sessionId = await $.session.id().catch(() => "");
+  await quietly(() => detectSystemLang($));
+  await quietly(() => loadProfile($));
+  const T = await textsFor($);
   await quietly(() =>
     $.command.register({
       name: "vanguard",
-      description:
-        "Открыть Vanguard — штаб агентов: отряд, лимиты, контекст, арсенал и достижения",
+      description: T.cmdVanguard,
     }),
   );
   await quietly(() =>
     $.command.register({
       name: "handoff",
-      description: "Сжать контекст, сохранив план, и записать снимок в файл",
+      description: T.cmdHandoff,
     }),
   );
   await quietly(async () => {
@@ -666,7 +702,6 @@ async function startUp($: Engine): Promise<void> {
     await update($, meters, (old: Meters | null) => toMeters(usage, old));
   });
   await quietly(() => syncAgents($));
-  await quietly(() => loadProfile($));
   await quietly(() => refreshBreakdown($));
   await quietly(() => refreshArsenal($));
   await quietly(() => checkAchievements($));
@@ -723,7 +758,7 @@ export const register: Register = (on, options) => {
   on("command.run", { command: "vanguard" }, async ($) => {
     await $.ui.open({ id: PANE, title: TITLE });
 
-    return { text: "Vanguard открыт." };
+    return { text: (await textsFor($)).opened };
   });
 
   on("command.run", { command: "handoff" }, async ($) => {
@@ -749,7 +784,7 @@ export const register: Register = (on, options) => {
           hero,
         ]);
         const badge = modelBadge(started.model);
-        await addLog($, badge.icon, badge.color, `Запущен: ${hero.title}`);
+        await addLog($, badge.icon, badge.color, "logLaunched", hero.title);
         const live = ((await read($, heroes)) as Hero[]).filter(
           (x) => x.status === "running",
         ).length;
@@ -808,9 +843,9 @@ export const register: Register = (on, options) => {
         const label =
           arms?.mcp.find((x) => x.name === server)?.label ??
           serverLabel(server);
-        await addLog($, "plug", "suggestion", `MCP в деле: ${label}`);
+        await addLog($, "plug", "suggestion", "logMcp", label);
       }
-      if (skill) await addLog($, "zap", "merged", `Скилл: ${skill}`);
+      if (skill) await addLog($, "zap", "merged", "logSkill", skill);
       await checkAchievements($);
       if (e.agentId) {
         await patchHero($, e.agentId, (x) => ({
@@ -872,7 +907,10 @@ export const register: Register = (on, options) => {
             $,
             view.icon,
             view.color,
-            `${view.label}: ${hero.title} · ${fmtDuration(now - hero.startedAt)}`,
+            "logStatus",
+            status,
+            hero.title,
+            now - hero.startedAt,
           );
         }
         await checkAchievements($);
@@ -894,7 +932,7 @@ export const register: Register = (on, options) => {
           ...x,
           skills: { ...x.skills, [e.skill]: (x.skills[e.skill] ?? 0) + 1 },
         }));
-        await addLog($, "zap", "merged", `Скилл: ${e.skill}`);
+        await addLog($, "zap", "merged", "logSkill", e.skill);
         await checkAchievements($);
       }
     });
@@ -965,12 +1003,13 @@ export const register: Register = (on, options) => {
         $,
         "save",
         "suggestion",
-        `Снимок контекста сохранён (${e.trigger === "auto" ? "авто" : "вручную"})`,
+        "logSnapshot",
+        e.trigger === "auto",
       );
       await bumpUsage($, (u) => ({ ...u, snapshots: u.snapshots + 1 }));
       await checkAchievements($);
     } catch {
-      $.ui.toast("Контекст сжат, но снимок в файл записать не удалось.");
+      $.ui.toast((await textsFor($)).snapshotFailed);
     }
 
     return result;
@@ -1012,23 +1051,53 @@ export const register: Register = (on, options) => {
     const sessionXp = xpOf(sessionRec);
     const lv = levelOf(xpOf(lifeRec) + have.length * 150);
     const anim = settings.animations;
+    const L: Lang = langOf(await read($, langPick));
+    const T = dict(L);
+    const dur = (ms: number) => fmtDuration(ms, T.units);
+    /** A journal line in this drawing's language. */
+    const logText = (l: LogLine): string => {
+      if (!l.msg) return l.text;
+      const [a0, a1, a2] = l.msg.a;
+      switch (l.msg.k) {
+        case "logStatus":
+          return T.logStatus(
+            T.status[a0 as HeroStatus] ?? String(a0),
+            String(a1),
+            dur(Number(a2)),
+          );
+        case "logAch":
+          return T.logAch(T.ach[String(a0)]?.title ?? String(a0));
+        case "newLevel":
+          return T.newLevel(Number(a0));
+        case "logLaunched":
+          return T.logLaunched(String(a0));
+        case "logMcp":
+          return T.logMcp(String(a0));
+        case "logSkill":
+          return T.logSkill(String(a0));
+        case "logSnapshot":
+          return T.logSnapshot(a0 === true);
+        default:
+          return l.text;
+      }
+    };
     const parts: Breakdown | null = await read($, breakdown);
     const party: Celebration | null = await read($, celebration);
     const shownTabs: { id: Tab; label: string }[] = [
-      { id: "overview", label: "Обзор" },
-      { id: "context", label: "Контекст" },
+      { id: "overview", label: T.tabOverview },
+      { id: "context", label: T.tabContext },
       ...(settings.showArsenal
-        ? [{ id: "arsenal" as const, label: "Арсенал" }]
+        ? [{ id: "arsenal" as const, label: T.tabArsenal }]
         : []),
       ...(settings.showAchievements
         ? [
             {
               id: "achievements" as const,
-              label: isCompact ? "Награды" : "Достижения",
+              label: isCompact ? T.tabAchievementsShort : T.tabAchievements,
             },
           ]
         : []),
-      ...(settings.showLog ? [{ id: "log" as const, label: "Журнал" }] : []),
+      ...(settings.showLog ? [{ id: "log" as const, label: T.tabLog }] : []),
     ];
     const savedTab: Tab = (await read($, tab)) ?? "overview";
     const current: Tab = shownTabs.some((t) => t.id === savedTab)
@@ -1154,7 +1223,7 @@ export const register: Register = (on, options) => {
                 ? pulseSvg(color)
                 : equalizerSvg(color)
           }
-          alt={kind === "loader" ? "работает" : "активно"}
+          alt={kind === "loader" ? T.working : T.active}
           width={size}
           height={size}
           isInteractive
@@ -1280,11 +1349,11 @@ export const register: Register = (on, options) => {
             paddingTop={1}
           >
             {icon("activity", "inactive", 14)}
-            <Text dimColor>{pad("История", 9)}</Text>
+            <Text dimColor>{pad(T.history, 9)}</Text>
             {Svg ? (
               <Svg
                 source={sparkSvg(series.slice(-60), meterColor(percentLeft))}
-                alt="история свободного контекста"
+                alt={T.historyAlt}
                 width={barWidth * 9}
                 height={16}
               />
@@ -1319,7 +1388,7 @@ export const register: Register = (on, options) => {
         : line(
             key,
             live("pulse", "inactive", 12),
-            <Text dimColor>думает…</Text>,
+            <Text dimColor>{T.thinking}</Text>,
           );
 
     // ── KPI tiles ────────────────────────────────────────────────────────
@@ -1356,43 +1425,47 @@ export const register: Register = (on, options) => {
         "t-time",
         "clock",
         "claude",
-        "Сессия",
-        fmtDuration(sessionMs),
-        `с ${fmtClock(sessionStart)}`,
+        T.tileSession,
+        dur(sessionMs),
+        T.since(fmtClock(sessionStart)),
       ),
       tile(
         "t-agents",
         "users",
         "warning",
-        "Субагенты",
+        T.tileAgents,
         `${running.length} / ${list.length}`,
-        `${won} готово${lost ? ` · ${lost} с ошибкой` : ""}`,
+        T.doneFailed(won, lost),
       ),
       tile(
         "t-calls",
         "wrench",
         "suggestion",
-        "Вызовы",
+        T.tileCalls,
         String(actions),
-        perMinute !== undefined ? `${perMinute.toFixed(1)} в минуту` : "—",
+        perMinute !== undefined ? T.perMinute(perMinute.toFixed(1)) : "—",
       ),
       tile(
         "t-tokens",
         "layers",
         "merged",
-        "Токены агентов",
+        T.tileTokens,
         agentTokens ? fmtTokens(agentTokens) : "—",
         list.length
-          ? `в среднем ${fmtTokens(Math.round(agentTokens / Math.max(1, finished.length || 1)))}`
+          ? T.average(
+              fmtTokens(
+                Math.round(agentTokens / Math.max(1, finished.length || 1)),
+              ),
+            )
           : " ",
       ),
       tile(
         "t-usd",
         "coins",
         "success",
-        "Расход",
+        T.tileSpend,
         m?.usd !== undefined ? `$${m.usd.toFixed(2)}` : "—",
-        burn !== undefined ? `$${burn.toFixed(2)} в час` : " ",
+        burn !== undefined ? T.perHour(burn.toFixed(2)) : " ",
       ),
     ];
     // One line of five equal tiles; pairs only in the compact layout.
@@ -1431,19 +1504,12 @@ export const register: Register = (on, options) => {
         borderColor="inactive"
         paddingX={space.padX}
       >
-        {figure(
-          "f-time",
-          "clock",
-          "claude",
-          "Сессия",
-          fmtDuration(sessionMs),
-          "",
-        )}
+        {figure("f-time", "clock", "claude", T.tileSession, dur(sessionMs), "")}
         {figure(
           "f-agents",
           "users",
           "warning",
-          "Агенты",
+          T.figAgents,
           `${running.length}/${list.length}`,
           lost ? `${lost} ✗` : "",
         )}
@@ -1451,16 +1517,16 @@ export const register: Register = (on, options) => {
           "f-calls",
           "wrench",
           "suggestion",
-          "Вызовы",
+          T.tileCalls,
           String(actions),
-          perMinute !== undefined ? `${perMinute.toFixed(1)}/мин` : "",
+          perMinute !== undefined ? T.perMinuteShort(perMinute.toFixed(1)) : "",
         )}
         {agentTokens
           ? figure(
               "f-tokens",
               "layers",
               "merged",
-              "Токены",
+              T.figTokens,
               fmtTokens(agentTokens),
               "",
             )
@@ -1469,9 +1535,9 @@ export const register: Register = (on, options) => {
           "f-usd",
           "coins",
           "success",
-          "Расход",
+          T.tileSpend,
           m?.usd !== undefined ? `$${m.usd.toFixed(2)}` : "—",
-          burn !== undefined ? `$${burn.toFixed(1)}/ч` : "",
+          burn !== undefined ? T.perHourShort(burn.toFixed(1)) : "",
         )}
       </Box>
     );
@@ -1537,14 +1603,16 @@ export const register: Register = (on, options) => {
               {running.length > 0 ? live("eq", "claude", 14, "eq") : null}
             </Box>
             <Text dimColor wrap="truncate-end">
-              {`Сессия №${(life?.sessions ?? 0) + 1} · `}
-              {boss && boss.model !== "?" ? shortModel(boss.model) : "модель…"}
+              {`${T.sessionNo((life?.sessions ?? 0) + 1)} · `}
+              {boss && boss.model !== "?"
+                ? shortModel(boss.model)
+                : T.modelPending}
               {isCompact
                 ? ""
                 : ` · ${
                     running.length > 0
-                      ? `${running.length} ${plural(running.length, AGENT_FORMS)} в работе`
-                      : "агенты не запущены"
+                      ? T.agentsWorking(running.length)
+                      : T.noAgentsRunning
                   }`}
             </Text>
           </Box>
@@ -1552,7 +1620,7 @@ export const register: Register = (on, options) => {
         {isCompact ? (
           <Box flexShrink={0}>
             <Text bold color="warning">
-              Ур.{lv.level}
+              {T.levelShort(lv.level)}
             </Text>
           </Box>
         ) : (
@@ -1561,7 +1629,7 @@ export const register: Register = (on, options) => {
               "lv",
               icon("trophy", "warning"),
               <Text bold color="warning">
-                Уровень {lv.level}
+                {T.level(lv.level)}
               </Text>,
             )}
             <Box flexDirection="row" alignItems="center" columnGap={1}>
@@ -1577,7 +1645,7 @@ export const register: Register = (on, options) => {
                 progress(lv.progress, "claude", 14)
               )}
               <Text dimColor>
-                {lv.xp} XP{sessionXp ? ` · +${sessionXp} за сессию` : ""}
+                {lv.xp} XP{sessionXp ? ` · ${T.sessionGain(sessionXp)}` : ""}
               </Text>
             </Box>
           </Box>
@@ -1594,14 +1662,12 @@ export const register: Register = (on, options) => {
             "model",
             icon(bossBadge.icon, bossBadge.color, 16),
             <Text bold color={bossBadge.color}>
-              {boss.model === "?"
-                ? "ждёт первого шага"
-                : shortModel(boss.model)}
+              {boss.model === "?" ? T.waitingFirstStep : shortModel(boss.model)}
             </Text>,
           )}
           <Text>
             <Text color="warning">{effortDots(boss.effort)}</Text>
-            <Text dimColor> {effortLabel(boss.effort)}</Text>
+            <Text dimColor> {effortLabel(boss.effort, T.effort)}</Text>
           </Text>
         </Box>
         <Box
@@ -1611,23 +1677,18 @@ export const register: Register = (on, options) => {
           flexWrap="wrap"
         >
           {icon("activity", "inactive", 12, "s")}
-          <Text dimColor>
-            {boss.steps} {plural(boss.steps, ["шаг", "шага", "шагов"])}
-          </Text>
+          <Text dimColor>{T.steps(boss.steps)}</Text>
           <Text dimColor>·</Text>
           {icon("wrench", "inactive", 12, "w")}
-          <Text dimColor>
-            {boss.actions}{" "}
-            {plural(boss.actions, ["вызов", "вызова", "вызовов"])}
-          </Text>
+          <Text dimColor>{T.calls(boss.actions)}</Text>
         </Box>
         <Box flexDirection="column">
-          <Text dimColor>Сейчас</Text>
+          <Text dimColor>{T.now}</Text>
           {action("now", boss.lastAction, boss.lastDetail)}
         </Box>
         {boss.toolCounts && Object.keys(boss.toolCounts).length > 0 ? (
           <Box flexDirection="column">
-            <Text dimColor>Чаще всего</Text>
+            <Text dimColor>{T.mostUsed}</Text>
             <Text wrap="truncate-end">
               {topTools(boss.toolCounts, isCompact ? 3 : 4, mcpNames)}
             </Text>
@@ -1635,7 +1696,7 @@ export const register: Register = (on, options) => {
         ) : null}
       </Box>
     ) : (
-      <Text dimColor>Ждёт первого запроса</Text>
+      <Text dimColor>{T.waitingFirstPrompt}</Text>
     );
 
     // ── Limits ───────────────────────────────────────────────────────────
@@ -1645,7 +1706,10 @@ export const register: Register = (on, options) => {
     );
     const ctxNote =
       m && m.contextTokens !== undefined && m.contextWindow > 0
-        ? `свободно ${fmtTokens(Math.max(0, m.contextWindow - m.contextTokens))} из ${fmtTokens(m.contextWindow)}`
+        ? T.ctxFree(
+            fmtTokens(Math.max(0, m.contextWindow - m.contextTokens)),
+            fmtTokens(m.contextWindow),
+          )
         : "";
     const fivePoints = samples.flatMap((s) =>
       s.five === undefined ? [] : [{ at: s.at, value: s.five }],
@@ -1654,34 +1718,27 @@ export const register: Register = (on, options) => {
       const at = resetsAt ? Date.parse(resetsAt) : NaN;
       const reset = Number.isNaN(at)
         ? ""
-        : `сброс ${fmtReset(at, now)} · через ${fmtDuration(at - now)}`;
+        : T.resets(fmtReset(at, now, LOCALE[L]), dur(at - now));
       if (kind !== "five_hour") return reset;
       const eta = etaToFull(fivePoints, now);
       if (eta === undefined || (!Number.isNaN(at) && eta >= at)) return reset;
 
-      return `${reset}${reset ? " · " : ""}кончится ~${fmtClock(eta)}`;
+      return `${reset}${reset ? " · " : ""}${T.runsOut(fmtClock(eta))}`;
     };
     const resBody = (
       <Box flexDirection="column" rowGap={space.inner}>
         {ctxUsed !== undefined
-          ? meter(
-              "ctx",
-              "layers",
-              "Контекст",
-              100 - ctxUsed,
-              ctxNote,
-              ctxSeries,
-            )
+          ? meter("ctx", "layers", T.ctx, 100 - ctxUsed, ctxNote, ctxSeries)
           : line(
               "ctx",
               icon("layers", "inactive"),
-              <Text dimColor>Контекст — нет данных до первого ответа</Text>,
+              <Text dimColor>{T.ctxNoData}</Text>,
             )}
         {(m?.rates ?? []).map((r) =>
           meter(
             r.kind,
             r.kind === "seven_day" ? "calendar" : "gauge",
-            rateLabel(r.kind),
+            rateLabel(r.kind, T.rate),
             100 - r.percentUsed,
             rateNote(r.kind, r.resetsAt),
           ),
@@ -1694,13 +1751,13 @@ export const register: Register = (on, options) => {
       ctx === "critical" ? "error" : ctx === "warn" ? "warning" : "success";
     const guardText =
       ctx === "critical"
-        ? "Контекст почти заполнен — сохраните снимок и сожмите"
+        ? T.guardCritical
         : ctx === "warn"
-          ? "Контекст заполняется — скоро стоит сжать"
-          : "Контекст в норме";
+          ? T.guardWarn
+          : T.guardOk;
     const snapText = snap
       ? `${fmtClock(snap.at)} · ${snap.path.replace(/^.*\/\.claude\//, "~/.claude/")}`
-      : "пока нет";
+      : T.snapNone;
     const guardWide = layout === "medium";
     const guardBody = (
       <Box
@@ -1722,36 +1779,28 @@ export const register: Register = (on, options) => {
             "snap",
             icon("save", "inactive", 13),
             <Text dimColor wrap="truncate-start">
-              Снимок: {snapText}
+              {T.snapshot(snapText)}
             </Text>,
           )}
         </Box>
         <Box columnGap={space.gap} rowGap={space.stack} flexWrap="wrap">
           <Button
             key="compact"
-            label="Сжать и сохранить"
+            label={T.btnCompact}
             variant={ctx === "ok" ? "secondary" : "primary"}
             onPress={async () => $.ui.toast(await compactNow($))}
           />
           {snap ? (
             <Button
               key="copy"
-              label={
-                isCompact
-                  ? "Копировать промпт"
-                  : "Скопировать промпт для новой сессии"
-              }
+              label={isCompact ? T.btnCopyShort : T.btnCopy}
               variant="secondary"
               onPress={async () => {
                 const r = await $.ui.copy({
-                  text: resumePrompt(snap.path),
+                  text: T.resume(snap.path),
                   surface: e.surface,
                 });
-                $.ui.toast(
-                  r.isCopied
-                    ? "Скопировано — вставьте в новую сессию"
-                    : "Не удалось скопировать",
-                );
+                $.ui.toast(r.isCopied ? T.copied : T.copyFailed);
               }}
             />
           ) : null}
@@ -1781,7 +1830,7 @@ export const register: Register = (on, options) => {
               "model",
               live("loader", badge.color, 14),
               <Text bold color={badge.color}>
-                {hero.model === "?" ? "модель…" : shortModel(hero.model)}
+                {hero.model === "?" ? T.modelPending : shortModel(hero.model)}
               </Text>,
             )}
             <Text color="warning">{effortDots(hero.effort)}</Text>
@@ -1796,7 +1845,7 @@ export const register: Register = (on, options) => {
           </Box>
           <Box flexDirection="row" alignItems="center" columnGap={1}>
             {icon("clock", "inactive", 12, "c")}
-            <Text dimColor>{fmtDuration(elapsed)}</Text>
+            <Text dimColor>{dur(elapsed)}</Text>
             <Text dimColor>·</Text>
             {icon("wrench", "inactive", 12, "w")}
             <Text dimColor>{hero.actions}</Text>
@@ -1816,7 +1865,10 @@ export const register: Register = (on, options) => {
             flexDirection="column"
           >
             <Text dimColor wrap="truncate-end">
-              Запущен {fmtClock(hero.startedAt)} · {effortLabel(hero.effort)}
+              {T.startedAt(
+                fmtClock(hero.startedAt),
+                effortLabel(hero.effort, T.effort),
+              )}
             </Text>
             <Text dimColor wrap="truncate-end">
               id {hero.id}
@@ -1840,7 +1892,7 @@ export const register: Register = (on, options) => {
               </Text>,
             )}
             <Text dimColor>
-              {fmtDuration(now - hero.startedAt)} · {hero.actions}
+              {dur(now - hero.startedAt)} · {hero.actions}
             </Text>
           </Box>
           <Box paddingLeft={2}>
@@ -1865,7 +1917,7 @@ export const register: Register = (on, options) => {
         line(
           "empty",
           icon("bot", "inactive"),
-          <Text dimColor>Сейчас нет запущенных субагентов</Text>,
+          <Text dimColor>{T.noSubagents}</Text>,
         )
       ) : isCompact ? (
         <Box flexDirection="column" rowGap={space.stack}>
@@ -1888,8 +1940,8 @@ export const register: Register = (on, options) => {
       const view = STATUS_VIEW[hero.status];
       const elapsed = (hero.endedAt ?? now) - hero.startedAt;
       const extra = isCompact
-        ? fmtDuration(elapsed)
-        : `${fmtDuration(elapsed)} · ${hero.actions} выз.${hero.tokens ? ` · ${fmtTokens(hero.tokens)}` : ""}`;
+        ? dur(elapsed)
+        : `${dur(elapsed)} · ${T.callsShort(hero.actions)}${hero.tokens ? ` · ${fmtTokens(hero.tokens)}` : ""}`;
 
       return (
         <Box key={hero.id} justifyContent="space-between" columnGap={1}>
@@ -1901,7 +1953,7 @@ export const register: Register = (on, options) => {
                 <Svg
                   key="s"
                   source={popCheckSvg(view.color)}
-                  alt="готово"
+                  alt={T.doneAlt}
                   width={14}
                   height={14}
                   isInteractive
@@ -1929,7 +1981,7 @@ export const register: Register = (on, options) => {
 
     const doneBody =
       finished.length === 0 ? (
-        <Text dimColor>Пока пусто</Text>
+        <Text dimColor>{T.nothingYet}</Text>
       ) : (
         <Box flexDirection="column">
           {finished
@@ -1940,7 +1992,7 @@ export const register: Register = (on, options) => {
       );
     const logBody =
       lines.length === 0 ? (
-        <Text dimColor>Событий пока нет</Text>
+        <Text dimColor>{T.noEvents}</Text>
       ) : (
         <Box flexDirection="column">
           {lines
@@ -1956,7 +2008,7 @@ export const register: Register = (on, options) => {
                 <Text dimColor>{fmtClock(l.at)}</Text>
                 {icon(l.icon, l.color ?? "inactive", 12)}
                 <Text wrap="truncate-end">
-                  {clip(l.text, pairWidth - frame - 12)}
+                  {clip(logText(l), pairWidth - frame - 12)}
                 </Text>
               </Box>
             ))}
@@ -2072,13 +2124,13 @@ export const register: Register = (on, options) => {
             <Text bold>{title}</Text>
             <Text dimColor>
               {total}
-              {hotCount ? ` · в деле ${hotCount}` : ""}
+              {hotCount ? ` · ${T.inUse(hotCount)}` : ""}
             </Text>
           </Box>
-          {more > 0 ? <Text dimColor>+ ещё {more}</Text> : null}
+          {more > 0 ? <Text dimColor>{T.more(more)}</Text> : null}
         </Box>
         {total === 0 ? (
-          <Text dimColor>нет</Text>
+          <Text dimColor>{T.none}</Text>
         ) : (
           grid(`${key}-grid`, chips, armCols)
         )}
@@ -2098,14 +2150,14 @@ export const register: Register = (on, options) => {
       (x) => used.skills[x.name] ?? 0,
     );
     const arsenalBody = !arms ? (
-      <Text dimColor>Собираю список…</Text>
+      <Text dimColor>{T.collecting}</Text>
     ) : (
       <Box flexDirection="column" rowGap={space.inner}>
         {group(
           "g-mcp",
           "plug",
           "suggestion",
-          "MCP-серверы",
+          T.groupMcp,
           mcpList.length,
           mcpList.filter((x) => used.mcp[x.name]).length,
           mcpList
@@ -2126,7 +2178,7 @@ export const register: Register = (on, options) => {
           "g-plugins",
           "puzzle",
           "claude",
-          "Плагины",
+          T.groupPlugins,
           pluginList.length,
           pluginList.filter((x) => pluginCalls(x.name)).length,
           pluginList
@@ -2147,7 +2199,7 @@ export const register: Register = (on, options) => {
           "g-skills",
           "zap",
           "merged",
-          isCompact ? "Скиллы" : "Скиллы и команды",
+          isCompact ? T.groupSkillsShort : T.groupSkills,
           skillList.length,
           skillList.filter((x) => used.skills[x.name]).length,
           skillList
@@ -2190,10 +2242,10 @@ export const register: Register = (on, options) => {
                 "next",
                 live("pulse", "warning", 12),
                 <Text wrap="truncate-end">
-                  <Text dimColor>Дальше: </Text>
-                  <Text bold>{next.title}</Text>
+                  <Text dimColor>{T.next}</Text>
+                  <Text bold>{(T.ach[next.id] ?? next).title}</Text>
                   <Text dimColor>
-                    {` — ${next.hint} (${Math.min(cur, goal)}/${goal})`}
+                    {` — ${(T.ach[next.id] ?? next).hint} (${Math.min(cur, goal)}/${goal})`}
                   </Text>
                 </Text>,
               );
@@ -2201,16 +2253,18 @@ export const register: Register = (on, options) => {
           : line(
               "all",
               icon("trophy", "warning"),
-              <Text color="warning">Все достижения открыты</Text>,
+              <Text color="warning">{T.allUnlocked}</Text>,
             )}
         {line(
           "life",
           icon("calendar", "inactive", 12),
           <Text dimColor wrap="truncate-end">
-            За всё время: {(life?.sessions ?? 0) + 1}{" "}
-            {plural((life?.sessions ?? 0) + 1, ["сессия", "сессии", "сессий"])}{" "}
-            · {lifeRec.agentsTotal} {plural(lifeRec.agentsTotal, AGENT_FORMS)} ·{" "}
-            {lifeRec.calls} выз. · ${lifeRec.usd.toFixed(2)}
+            {T.lifetime(
+              (life?.sessions ?? 0) + 1,
+              lifeRec.agentsTotal,
+              lifeRec.calls,
+              lifeRec.usd.toFixed(2),
+            )}
           </Text>,
         )}
         {grid(
@@ -2224,11 +2278,11 @@ export const register: Register = (on, options) => {
               `a-${a.id}`,
               got ? "medal" : "lock",
               "warning",
-              a.title,
+              (T.ach[a.id] ?? a).title,
               got,
               got
                 ? isFresh
-                  ? "новое!"
+                  ? T.fresh
                   : "✓"
                 : `${Math.min(cur, goal)}/${goal}`,
               isFresh ? live("pulse", "warning", 12) : undefined,
@@ -2255,7 +2309,7 @@ export const register: Register = (on, options) => {
     const bossSection = section(
       "boss",
       "crown",
-      "Главный агент",
+      T.secMain,
       "claude",
       bossBody,
       layout === "medium" ? pairW : colW,
@@ -2263,16 +2317,16 @@ export const register: Register = (on, options) => {
     const resSection = section(
       "res",
       "gauge",
-      "Лимиты",
+      T.secLimits,
       "suggestion",
       resBody,
       layout === "medium" ? pairW : colW,
-      <Text dimColor>остаток</Text>,
+      <Text dimColor>{T.remaining}</Text>,
     );
     const guardSection = section(
       "guard",
       "shield",
-      "Страж контекста",
+      T.secGuard,
       guardColor,
       guardBody,
       layout === "wide" ? colW : "100%",
@@ -2280,7 +2334,7 @@ export const register: Register = (on, options) => {
     const partySection = section(
       "party",
       "users",
-      "Субагенты в работе",
+      T.secSquad,
       "warning",
       partyBody,
       "100%",
@@ -2293,7 +2347,7 @@ export const register: Register = (on, options) => {
     const doneSection = section(
       "done",
       "trophy",
-      "Завершённые",
+      T.secDone,
       "success",
       doneBody,
       pairW,
@@ -2304,7 +2358,7 @@ export const register: Register = (on, options) => {
     const logSection = section(
       "log",
       "list",
-      "Журнал",
+      T.secLog,
       "inactive",
       logBody,
       pairW,
@@ -2314,26 +2368,22 @@ export const register: Register = (on, options) => {
     const arsenalSection = section(
       "arsenal",
       "swords",
-      "Арсенал",
+      T.secArsenal,
       "suggestion",
       arsenalBody,
       "100%",
       <Text dimColor>
-        {hotTotal
-          ? `в деле ${hotTotal}`
-          : isCompact
-            ? ""
-            : "подсвечено то, что в деле"}
+        {hotTotal ? T.inUse(hotTotal) : isCompact ? "" : T.litHint}
       </Text>,
     );
     const achSection = section(
       "ach",
       "medal",
-      "Достижения",
+      T.secAchievements,
       "warning",
       achBody,
       "100%",
-      <Text dimColor>{isCompact ? "" : "+150 XP за каждое"}</Text>,
+      <Text dimColor>{isCompact ? "" : T.xpEach}</Text>,
     );
 
     // ── Context: what the window is made of ─────────────────────────────
@@ -2368,7 +2418,7 @@ export const register: Register = (on, options) => {
             color: c.color,
           })),
         )}
-        alt="Состав контекста"
+        alt={T.compositionAlt}
         width={ctxWidth * 9}
         height={10}
       />
@@ -2428,16 +2478,19 @@ export const register: Register = (on, options) => {
     );
     const usedTotal = usedRows.reduce((a, r) => a + r.tokens, 0);
     const compositionBody = !parts ? (
-      <Text dimColor>Собираю разбивку…</Text>
+      <Text dimColor>{T.collectingBreakdown}</Text>
     ) : (
       <Box flexDirection="column" rowGap={space.inner}>
         <Text>
-          <Text dimColor>Занято </Text>
-          <Text bold>{fmtTokens(usedTotal)}</Text>
-          <Text dimColor> из {fmtTokens(windowMax)} · </Text>
-          <Text bold>{pctOf(usedTotal).toFixed(0)}%</Text>
+          <Text bold>
+            {T.usedOf(
+              fmtTokens(usedTotal),
+              fmtTokens(windowMax),
+              pctOf(usedTotal).toFixed(0),
+            )}
+          </Text>
           {freeRow ? (
-            <Text dimColor> · свободно {fmtTokens(freeRow.tokens)}</Text>
+            <Text dimColor>{T.freeOf(fmtTokens(freeRow.tokens))}</Text>
           ) : null}
         </Text>
         {stacked}
@@ -2449,7 +2502,7 @@ export const register: Register = (on, options) => {
             legendRow(
               `df-${i}`,
               "inactive",
-              `${r.name} (по запросу)`,
+              T.onDemand(r.name),
               r.tokens,
               true,
             ),
@@ -2493,20 +2546,20 @@ export const register: Register = (on, options) => {
     const compositionSection = section(
       "composition",
       "layers",
-      isCompact ? "Состав контекста" : "Из чего состоит контекст",
+      isCompact ? T.secCompositionShort : T.secComposition,
       "merged",
       compositionBody,
       "100%",
       parts && !isCompact ? (
-        <Text dimColor>обновлено {fmtClock(parts.at)}</Text>
+        <Text dimColor>{T.updated(fmtClock(parts.at))}</Text>
       ) : undefined,
     );
     const mcpWeightSection = section(
       "mcp-weight",
       "plug",
-      "MCP по весу",
+      T.secMcpWeight,
       "suggestion",
-      topList("mw", mcpWeight, "MCP-серверов нет"),
+      topList("mw", mcpWeight, T.noMcp),
       colW,
       mcpWeight.length ? (
         <Text dimColor>
@@ -2517,9 +2570,9 @@ export const register: Register = (on, options) => {
     const memorySection = section(
       "memory",
       "file",
-      "Файлы памяти",
+      T.secMemory,
       "claude",
-      topList("mf", memoryWeight, "CLAUDE.md не загружены"),
+      topList("mf", memoryWeight, T.noMemory),
       colW,
       memoryWeight.length ? (
         <Text dimColor>
@@ -2530,6 +2583,18 @@ export const register: Register = (on, options) => {
 
     // ── Celebration banner ───────────────────────────────────────────────
     const isParty = party !== null && now - party.at < CELEBRATE_MS;
+    const partyIds = party?.ids ?? [];
+    const firstAch = T.ach[partyIds[0] ?? ""];
+    const partyTitle =
+      party?.kind === "level"
+        ? T.level(party.level ?? lv.level)
+        : firstAch
+          ? partyIds.length > 1
+            ? T.andMore(firstAch.title, partyIds.length - 1)
+            : firstAch.title
+          : "";
+    const partyNote =
+      party?.kind === "level" ? T.newLevelNote : (firstAch?.hint ?? "");
     const partyColor = party?.kind === "level" ? "claude" : "warning";
     const banner =
       isParty && party ? (
@@ -2545,7 +2610,7 @@ export const register: Register = (on, options) => {
           {Svg && anim && takeFrame() ? (
             <Svg
               source={burstSvg(partyColor)}
-              alt="празднование"
+              alt={T.celebrationAlt}
               width={isCompact ? 32 : 44}
               height={isCompact ? 29 : 40}
               isInteractive
@@ -2557,14 +2622,14 @@ export const register: Register = (on, options) => {
           )}
           <Box flexDirection="column" flexShrink={1} minWidth={0}>
             <Text dimColor>
-              {party.kind === "level" ? "Новый уровень!" : "Достижение открыто"}
+              {party.kind === "level" ? T.bannerLevel : T.bannerAch}
             </Text>
             <Text bold color={partyColor} wrap="truncate-end">
-              {party.title}
+              {partyTitle}
             </Text>
             {isCompact ? null : (
               <Text dimColor wrap="truncate-end">
-                {party.note}
+                {partyNote}
               </Text>
             )}
           </Box>
@@ -2572,6 +2637,38 @@ export const register: Register = (on, options) => {
       ) : null;
 
     // ── Tabs ─────────────────────────────────────────────────────────────
+    // ── Language switcher: a native list where the surface draws one, a cycling button on the terminal.
+    const setLang = async (id: Lang) => {
+      await update($, langPick, () => id);
+      await writeProfile($, (p) => ({ ...p, lang: id }));
+    };
+    const Select =
+      e.surface !== "terminal" && "Select" in els ? els.Select : undefined;
+    const current_ = LANGS.find((x) => x.id === L) ?? LANGS[0]!;
+    const langSwitch = Select ? (
+      <Select
+        key="lang"
+        label={T.language}
+        value={L}
+        options={LANGS.map((x) => ({ value: x.id, label: x.name }))}
+        onSelect={(value: string) => {
+          if (isLang(value)) void setLang(value);
+        }}
+      />
+    ) : (
+      <Button
+        key="lang"
+        label={`◍ ${current_.short}`}
+        plain
+        dimColor
+        onPress={async () => {
+          const i = LANGS.findIndex((x) => x.id === L);
+          const nextLang = LANGS[(i + 1) % LANGS.length]!.id;
+          await setLang(nextLang);
+        }}
+      />
+    );
+
     const tabBar = (
       <Box
         key="tabs"
@@ -2604,6 +2701,7 @@ export const register: Register = (on, options) => {
             }}
           />
         ))}
+        {langSwitch}
       </Box>
     );
 
@@ -2654,6 +2752,7 @@ export const register: Register = (on, options) => {
     );
     if ((running.length === 0 && ctx === "ok") || e.props.hasSurvey)
       return next(e);
+    const T = dict(langOf(await read($, langPick)));
     const els = $.ui.resolve(e);
     const { Box, Text } = els;
     // The terminal table carries Svg too, and draws nothing for it: glyphs there.
@@ -2680,9 +2779,7 @@ export const register: Register = (on, options) => {
       <Box flexDirection="row" alignItems="center" columnGap={1} paddingX={1}>
         {running.length > 0 ? icon("users", "claude", "a") : null}
         {running.length > 0 ? (
-          <Text color="claude">
-            {running.length} {plural(running.length, AGENT_FORMS)} в работе
-          </Text>
+          <Text color="claude">{T.agentsWorking(running.length)}</Text>
         ) : null}
         {running.map((x) => {
           const b = modelBadge(x.model);
@@ -2691,13 +2788,13 @@ export const register: Register = (on, options) => {
         {m?.contextPercent !== undefined ? icon("layers", ctxColor, "c") : null}
         {m?.contextPercent !== undefined ? (
           <Text color={ctxColor}>
-            контекст {100 - m.contextPercent}%
+            {T.bandContext(100 - m.contextPercent)}
             {ctx === "ok" ? "" : " · /handoff"}
           </Text>
         ) : null}
         {five ? icon("gauge", "subtle", "f") : null}
         {five ? (
-          <Text dimColor>5ч {Math.round(100 - five.percentUsed)}%</Text>
+          <Text dimColor>{T.bandFive(Math.round(100 - five.percentUsed))}</Text>
         ) : null}
         {m?.usd !== undefined ? icon("coins", "subtle", "u") : null}
         {m?.usd !== undefined ? (

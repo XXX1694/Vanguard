@@ -41,11 +41,17 @@ export type Commander = {
   startedAt: number;
 };
 
+/**
+ * A journal line. `msg` names a message of the language table and its
+ * arguments, so the line reads in whatever language the pane shows; `text` is
+ * the fallback for lines written before languages.
+ */
 export type LogLine = {
   at: number;
   icon: string;
   color?: string;
   text: string;
+  msg?: { k: string; a: (string | number | boolean)[] };
 };
 
 /** One reading of the meters, kept for sparklines and the limit forecast. */
@@ -104,8 +110,9 @@ export type Breakdown = {
 /** A moment worth a banner: an unlock or a new level, shown for a few seconds. */
 export type Celebration = {
   kind: "achievement" | "level";
-  title: string;
-  note: string;
+  /** The achievements unlocked together, by id. */
+  ids?: string[];
+  level?: number;
   at: number;
 };
 
@@ -151,6 +158,8 @@ declare module "claude-code" {
       tab: Tab;
       celebration: Celebration | null;
       levelSeen: number;
+      /** The language picked in the pane; null follows the setting. */
+      lang: string | null;
     };
   }
 }

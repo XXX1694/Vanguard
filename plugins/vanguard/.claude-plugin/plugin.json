@@ -1,6 +1,6 @@
 {
   "name": "vanguard",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Command center for Claude Code: a live pane for your squad of subagents, limits and context, an orchestrator that fans work out to specialist agents, bundled MCP servers and skills, and a lifetime profile with levels and achievements.",
   "author": {
     "name": "Abzal Serikbay"
@@ -19,6 +19,25 @@
   ],
   "types": "./types/index.d.ts",
   "userConfig": {
+    "language": {
+      "type": "string",
+      "title": "Language / Язык",
+      "description": "Interface language. auto follows the system locale; the switcher in the pane overrides it.",
+      "default": "auto",
+      "options": [
+        "auto",
+        "en",
+        "ru",
+        "zh",
+        "hi",
+        "es",
+        "pt",
+        "ja",
+        "ko",
+        "de",
+        "fr"
+      ]
+    },
     "orchestrator": {
       "type": "boolean",
       "title": "Правила оркестратора",
