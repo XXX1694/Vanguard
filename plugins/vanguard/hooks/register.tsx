@@ -64,6 +64,8 @@ import {
   fmtReset,
   fmtTokens,
   emptyRecord,
+  guardStep,
+  guardThresholds,
   handoffMarkdown,
   levelOf,
   mergeRecords,
@@ -162,6 +164,8 @@ const DEFAULTS: Settings = {
 };
 let settings: Settings = DEFAULTS;
 let sessionId = "";
+/** Whether the guard may raise its "context is critical" toast again. */
+let guardArmed = true;
 let lastSaved = "";
 
 const STORE_SESSIONS = "sessions";
@@ -646,7 +650,7 @@ async function checkAchievements($: Engine): Promise<void> {
 
 async function handoffPath($: Engine, at: number): Promise<string> {
   const home = (await $.env.get("HOME")) ?? ".";
-  const stamp = new Date(at).toISOString().slice(0, 16).replace(/[:T]/g, "-");
+  const stamp = new Date(at).toISOString().slice(0, 19).replace(/[:T]/g, "-");
 
   return `${home}/.claude/handoffs/${stamp}.md`;
 }
@@ -732,6 +736,10 @@ async function startUp($: Engine): Promise<void> {
 
 export const register: Register = (on, options) => {
   settings = { ...DEFAULTS, ...(options as Partial<Settings>) };
+  const limits = guardThresholds(settings.ctxWarn, settings.ctxCritical);
+  settings.ctxWarn = limits.warn;
+  settings.ctxCritical = limits.critical;
+  guardArmed = true;
 
   on("session.start", async ($, e, next) => {
     await quietly(() => startUp($));
@@ -961,6 +969,15 @@ export const register: Register = (on, options) => {
           (a, b) => a.ctx === b.ctx && a.five === b.five,
         ),
       );
+      const percent = e.context?.percent;
+      if (percent !== undefined) {
+        const step = guardStep(
+          guardArmed,
+          contextLevel(percent, settings.ctxWarn, settings.ctxCritical),
+        );
+        guardArmed = step.armed;
+        if (step.alert) $.ui.toast((await textsFor($)).guardToast(percent));
+      }
     });
 
     return next(e);
@@ -972,6 +989,7 @@ export const register: Register = (on, options) => {
     const instructions = [e.instructions, PRESERVE_INSTRUCTIONS]
       .filter(Boolean)
       .join("\n\n");
+    const before: Meters | null = await read($, meters).catch(() => null);
     const result = await next({ ...e, instructions });
     if (result.skip !== undefined) return result;
     try {
@@ -988,6 +1006,8 @@ export const register: Register = (on, options) => {
         cwd: await $.session.cwd(),
         model: await $.session.model(),
         tokensBefore: result.tokensBefore,
+        contextPercent: before?.contextPercent,
+        trigger: e.trigger,
         heroes: await read($, heroes),
         summary,
         path,
@@ -1800,6 +1820,7 @@ export const register: Register = (on, options) => {
           <Button
             key="compact"
             label={T.btnCompact}
+            hotkey="h"
             variant={ctx === "ok" ? "secondary" : "primary"}
             onPress={async () => $.ui.toast(await compactNow($))}
           />
@@ -2793,7 +2814,7 @@ export const register: Register = (on, options) => {
       return next(e);
     const T = dict(langOf(await read($, langPick)));
     const els = $.ui.resolve(e);
-    const { Box, Text } = els;
+    const { Box, Text, Button } = els;
     // The terminal table carries Svg too, and draws nothing for it: glyphs there.
     const Svg = e.surface !== "terminal" && "Svg" in els ? els.Svg : undefined;
     const icon = (name: IconName, color: string, key: string) =>
@@ -2826,10 +2847,17 @@ export const register: Register = (on, options) => {
         })}
         {m?.contextPercent !== undefined ? icon("layers", ctxColor, "c") : null}
         {m?.contextPercent !== undefined ? (
-          <Text color={ctxColor}>
-            {T.bandContext(100 - m.contextPercent)}
-            {ctx === "ok" ? "" : " · /handoff"}
-          </Text>
+          <Text color={ctxColor}>{T.bandContext(100 - m.contextPercent)}</Text>
+        ) : null}
+        {m?.contextPercent !== undefined && ctx !== "ok" ? (
+          // One key from the focused band: h compacts and writes the snapshot.
+          <Button
+            key="handoff"
+            label="/handoff"
+            hotkey="h"
+            plain
+            onPress={async () => $.ui.toast(await compactNow($))}
+          />
         ) : null}
         {five ? icon("gauge", "subtle", "f") : null}
         {five ? (

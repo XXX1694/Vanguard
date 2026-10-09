@@ -234,6 +234,37 @@ export function contextLevel(
   return percentUsed < critical ? "warn" : "critical";
 }
 
+/**
+ * The guard's thresholds from the settings, made sane: whole percents, warn in
+ * 1–99, critical above warn and at most 100. A setting that is no number falls
+ * back to the default.
+ */
+export function guardThresholds(
+  warn: unknown,
+  critical: unknown,
+): { warn: number; critical: number } {
+  const num = (v: unknown, d: number) =>
+    typeof v === "number" && Number.isFinite(v) ? Math.round(v) : d;
+  const w = Math.min(99, Math.max(1, num(warn, CONTEXT_WARN)));
+  const c = Math.min(100, Math.max(2, num(critical, CONTEXT_CRITICAL)));
+
+  return { warn: w, critical: c > w ? c : Math.min(100, w + 1) };
+}
+
+/**
+ * One step of the guard's alert: it fires once when the context turns
+ * critical, and arms again only once the context is back below the warning.
+ */
+export function guardStep(
+  armed: boolean,
+  level: ContextLevel,
+): { armed: boolean; alert: boolean } {
+  if (level === "critical") return { armed: false, alert: armed };
+  if (level === "ok") return { armed: true, alert: false };
+
+  return { armed, alert: false };
+}
+
 /** Appended to every compaction of the main loop so the summary keeps what the work needs. */
 export const PRESERVE_INSTRUCTIONS = [
   "Keep in full, as concrete facts, not vague prose:",
@@ -252,6 +283,10 @@ export type HandoffInput = {
   cwd: string;
   model: string;
   tokensBefore?: number;
+  /** How full the window was, 0–100, when the compaction began. */
+  contextPercent?: number;
+  /** What started it: `manual` (/handoff, the pane) or `auto`. */
+  trigger?: string;
   heroes: Hero[];
   summary: string;
   path: string;
@@ -265,20 +300,42 @@ export function handoffMarkdown(h: HandoffInput): string {
       : running
           .map(
             (x) =>
-              `- ${x.title} (${x.type}, ${shortModel(x.model)}, id ${x.id})`,
+              `- ${x.title} (${x.type}, ${shortModel(x.model)}, id ${x.id})` +
+              (x.lastAction
+                ? ` · last: ${x.lastAction}${x.lastDetail ? ` ${clip(x.lastDetail, 80)}` : ""}`
+                : ""),
           )
           .join("\n");
+  const recent = h.heroes
+    .filter((x) => x.status !== "running")
+    .sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
+    .slice(0, 5)
+    .map(
+      (x) =>
+        `- ${x.title} (${x.type}): ${x.status}` +
+        (x.endedAt !== undefined
+          ? `, ${fmtDuration(x.endedAt - x.startedAt)}`
+          : ""),
+    );
+  const context = [
+    h.tokensBefore ? fmtTokens(h.tokensBefore) : "",
+    h.contextPercent !== undefined ? `${Math.round(h.contextPercent)}%` : "",
+  ]
+    .filter(Boolean)
+    .join(", ");
   const lines = [
     `# Handoff ${new Date(h.at).toISOString()}`,
     "",
     `Session \`${h.sessionId}\` · cwd \`${h.cwd}\` · model \`${h.model}\`` +
-      (h.tokensBefore
-        ? ` · context before compaction ${fmtTokens(h.tokensBefore)}`
-        : ""),
+      (h.trigger ? ` · ${h.trigger} compaction` : "") +
+      (context ? ` · context before compaction ${context}` : ""),
     "",
     "## Agents running at the time",
     agents,
     "",
+    ...(recent.length > 0
+      ? ["## Recently finished agents", ...recent, ""]
+      : []),
     "## Summary",
     h.summary.trim() || "(the compaction returned no summary text)",
     "",

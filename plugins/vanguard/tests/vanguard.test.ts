@@ -28,6 +28,8 @@ import {
   reconcileHeroes,
   streakWith,
   trimHeroes,
+  guardStep,
+  guardThresholds,
 } from "../hooks/lib";
 import type { Hero } from "../types";
 import { iconSvg, LOGO_SVG, toolIcon } from "../hooks/icons";
@@ -121,7 +123,8 @@ describe("helpers", () => {
     });
     expect(md).toContain("Next steps: merge PR 9");
     expect(md).toContain("- Deploy (implementer, sonnet 5.5, id a1)");
-    expect(md).not.toContain("Old (");
+    expect(md).toContain("## Recently finished agents\n- Old (explorer): done");
+    expect(md.indexOf("Old (")).toBeGreaterThan(md.indexOf("Recently finished"));
     expect(md).toContain("Read /home/u/.claude/handoffs/x.md");
   });
 });
@@ -817,6 +820,98 @@ test(
     ).toBeDefined();
     await later.press({ key: "tab-log" });
     expect(await later.find({ type: "Text", text: /Map the repo/ })).toBeDefined();
+  },
+);
+
+describe("context guard", () => {
+  test("thresholds are made sane", () => {
+    expect(guardThresholds(70, 85)).toEqual({ warn: 70, critical: 85 });
+    expect(guardThresholds(90, 80)).toEqual({ warn: 90, critical: 91 });
+    expect(guardThresholds("x", undefined)).toEqual({ warn: 70, critical: 85 });
+    expect(guardThresholds(-5, 400)).toEqual({ warn: 1, critical: 100 });
+    expect(guardThresholds(99.6, 99)).toEqual({ warn: 99, critical: 100 });
+    expect(contextLevel(95, 90, 91)).toBe("critical");
+  });
+
+  test("the alert fires once per climb and re-arms below the warning", () => {
+    let armed = true;
+    const fired: boolean[] = [];
+    for (const level of [
+      "ok",
+      "critical",
+      "critical",
+      "warn",
+      "critical",
+      "ok",
+      "critical",
+    ] as const) {
+      const s = guardStep(armed, level);
+      armed = s.armed;
+      fired.push(s.alert);
+    }
+    expect(fired).toEqual([false, true, false, false, false, false, true]);
+  });
+
+  test("the snapshot says what started it and how full the window was", () => {
+    const md = handoffMarkdown({
+      at: 0,
+      sessionId: "s",
+      cwd: "/r",
+      model: "m",
+      tokensBefore: 170_000,
+      contextPercent: 85.4,
+      trigger: "auto",
+      heroes: [
+        {
+          id: "a",
+          title: "Tests",
+          type: "verifier",
+          model: "claude-haiku-5-5",
+          status: "running",
+          startedAt: 0,
+          actions: 2,
+          lastAction: "Bash",
+          lastDetail: "npm test",
+        },
+      ],
+      summary: "x",
+      path: "/p.md",
+    });
+    expect(md).toContain("auto compaction · context before compaction 170k, 85%");
+    expect(md).toContain("· last: Bash npm test");
+    expect(md).not.toContain("Recently finished");
+  });
+});
+
+test(
+  "the guard toasts once when the context turns critical",
+  { options: { language: "en", ctxWarn: 70, ctxCritical: 85 } },
+  async ($, on) => {
+    mock.clock(on);
+    const toasts: string[] = [];
+    on("session.measure", (_$, e) => ({ changed: e.changed }));
+    on("ui.toast", (_$, e) => {
+      toasts.push(String((e as { text?: string }).text ?? e));
+      return { value: undefined } as never;
+    });
+    const measure = (percent: number) =>
+      ($ as any).session.measure({
+        context: { window: 200_000, tokens: percent * 2000, percent },
+        rateLimits: [],
+        changed: ["context"],
+      });
+    for (const p of [40, 86, 90, 75, 88, 50, 91]) await measure(p);
+    const alerts = toasts.filter((t) => t.includes("/handoff"));
+    expect(alerts).toHaveLength(2);
+    expect(alerts[0]).toContain("86%");
+
+    const band = await $.ui.mount({
+      plugin: "vanguard",
+      surface: "terminal",
+      component: "AbovePrompt",
+      props: { hasSurvey: false } as never,
+    });
+    expect(await band.find({ type: "Button", key: "handoff" })).toBeDefined();
   },
 );
 
