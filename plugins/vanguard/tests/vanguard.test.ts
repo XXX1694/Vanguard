@@ -36,7 +36,7 @@ import {
   CHIME_GAP_MS,
 } from "../hooks/lib";
 import type { Hero } from "../types";
-import { iconSvg, LOGO_SVG, toolIcon } from "../hooks/icons";
+import { GLYPHS, iconSvg, LOGO_SVG, toolIcon } from "../hooks/icons";
 import { dict, LANGS, langFromLocale } from "../hooks/i18n";
 
 /** The engine-level tests read the Russian interface. */
@@ -1053,6 +1053,58 @@ for (const sound of [true, false])
       expect(chimes).toBe(sound ? 1 : 0);
     },
   );
+
+for (const surface of ["terminal", "desktop"] as const)
+  test(
+    `at 80 columns the tiles go three to a row (${surface})`,
+    { options: { language: "en" } },
+    async ($, on) => {
+      mock.clock(on);
+      const mount = (bodyColumns: number) =>
+        $.ui.mount({
+          plugin: "vanguard",
+          surface,
+          component: "Pane",
+          props: { ...PANE_PROPS, bodyColumns },
+          requestId: "vanguard",
+        });
+      const at80 = await mount(80);
+      expect(await at80.find({ key: "tr-1" })).toBeDefined();
+      expect(await at80.find({ key: "tc-3" })).toBeUndefined();
+      expect(await at80.find({ type: "Text", text: "Limits" })).toBeDefined();
+      await at80.unmount();
+      const wide = await mount(150);
+      expect(await wide.find({ key: "tr-1" })).toBeUndefined();
+      expect(await wide.find({ key: "tc-4" })).toBeDefined();
+    },
+  );
+
+test(
+  "the band keeps to five model icons however large the squad",
+  { options: { language: "en" } },
+  async ($, on) => {
+    mock.clock(on);
+    on("ui.toast", () => ({ value: undefined }) as never);
+    let n = 0;
+    on("agent.spawn", () => ({
+      model: "claude-haiku-5-5",
+      agentId: `agent-${++n}`,
+    }));
+    for (let i = 0; i < 9; i++)
+      await $.agent.spawn({ prompt: "p", description: `T${i}` } as never);
+    const band = await $.ui.mount({
+      plugin: "vanguard",
+      surface: "terminal",
+      component: "AbovePrompt",
+      props: { hasSurvey: false } as never,
+    });
+    const haikus = (await band.findAll({ type: "Text" })).filter(
+      (x: any) => x.text === GLYPHS.feather,
+    );
+    expect(haikus).toHaveLength(5);
+    expect(await band.find({ type: "Text", text: "+4" })).toBeDefined();
+  },
+);
 
 describe("orchestrator rules", () => {
   test("name the plugin's agents and follow the context threshold", () => {

@@ -138,6 +138,8 @@ const CELEBRATE_MS = 8000;
 const FRESH_DONE_MS = 6000;
 /** At most this many animated drawings at once on a remote surface: each is a frame of its own. */
 const FRAME_BUDGET = 8;
+/** At most this many model icons in the band, so it keeps to one line at 80 columns. */
+const BAND_ICONS = 5;
 
 /** The mod's settings, from the manifest's userConfig (the config menu). */
 type Settings = {
@@ -1520,8 +1522,9 @@ export const register: Register = (on, options) => {
         burn !== undefined ? T.perHour(burn.toFixed(2)) : " ",
       ),
     ];
-    // One line of five equal tiles; pairs only in the compact layout.
-    const perRow = isCompact ? 2 : 5;
+    // Five equal tiles on one line where they fit (each needs about 20
+    // cells); three to a row at medium widths such as 80 columns.
+    const perRow = isCompact ? 2 : inner >= 110 ? 5 : 3;
     const tileRows: RenderNode[][] = [];
     for (let i = 0; i < tileList.length; i += perRow)
       tileRows.push(tileList.slice(i, i + perRow));
@@ -2873,10 +2876,13 @@ export const register: Register = (on, options) => {
         {running.length > 0 ? (
           <Text color="claude">{T.agentsWorking(running.length)}</Text>
         ) : null}
-        {running.map((x) => {
+        {running.slice(0, BAND_ICONS).map((x) => {
           const b = modelBadge(x.model);
           return icon(b.icon, b.color, `m-${x.id}`);
         })}
+        {running.length > BAND_ICONS ? (
+          <Text key="more" dimColor>{`+${running.length - BAND_ICONS}`}</Text>
+        ) : null}
         {m?.contextPercent !== undefined ? icon("layers", ctxColor, "c") : null}
         {m?.contextPercent !== undefined ? (
           <Text color={ctxColor}>{T.bandContext(percentLeft(m.contextPercent))}</Text>
