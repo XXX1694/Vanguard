@@ -23,8 +23,23 @@ import {
   mcpServer,
   serverLabel,
   orchestratorRules,
+  EMPTY_RETIRED,
+  mergeSpawned,
+  reconcileHeroes,
+  streakWith,
+  trimHeroes,
+  guardStep,
+  guardThresholds,
+  percentLeft,
+  isPastReset,
+  rateLeft,
+  FRESH_DONE_MS,
+  fmtClock,
+  mayChime,
+  CHIME_GAP_MS,
 } from "../hooks/lib";
-import { iconSvg, LOGO_SVG, toolIcon } from "../hooks/icons";
+import type { Hero } from "../types";
+import { GLYPHS, iconSvg, LOGO_SVG, toolIcon } from "../hooks/icons";
 import { dict, LANGS, langFromLocale } from "../hooks/i18n";
 
 /** The engine-level tests read the Russian interface. */
@@ -115,7 +130,8 @@ describe("helpers", () => {
     });
     expect(md).toContain("Next steps: merge PR 9");
     expect(md).toContain("- Deploy (implementer, sonnet 5.5, id a1)");
-    expect(md).not.toContain("Old (");
+    expect(md).toContain("## Recently finished agents\n- Old (explorer): done");
+    expect(md.indexOf("Old (")).toBeGreaterThan(md.indexOf("Recently finished"));
     expect(md).toContain("Read /home/u/.claude/handoffs/x.md");
   });
 });
@@ -206,6 +222,45 @@ test(
     );
   },
 );
+
+test(
+  "a snapshot that cannot be written never breaks the compaction",
+  RU,
+  async ($, on) => {
+    mock.clock(on);
+    mock.env(on, { HOME: "/home/u" });
+    on(
+      "session.compact",
+      () =>
+        ({
+          messages: [{ role: "user", text: "SUMMARY", toolUses: [] }],
+          tokensBefore: 1,
+        }) as never,
+    );
+    on("fs.write", () => {
+      throw new Error("disk full");
+    });
+    on("ui.toast", () => {
+      throw new Error("no toasts here");
+    });
+
+    const r = await $.session.compact({
+      trigger: "manual",
+      messages: [{ role: "user", text: "chat", toolUses: [] }],
+    } as never);
+    expect(r.skip).toBeUndefined();
+    expect((r as { tokensBefore?: number }).tokensBefore).toBe(1);
+  },
+);
+
+test("a tool call goes through whatever the bookkeeping does", RU, async ($, on) => {
+  on("clock.now", () => {
+    throw new Error("no clock");
+  });
+  on("tool.call", () => ({ result: "ran" }) as never);
+  const r = await $.tool.call({ tool: "Bash", command: "ls" } as never);
+  expect((r as { result?: string }).result).toBe("ran");
+});
 
 describe("mechanics", () => {
   test("streaks, unlocks and the next achievement", () => {
@@ -639,6 +694,476 @@ test(
     expect(Object.keys(JSON.parse(files[PROFILE] ?? "{}").sessions)).toContain(
       "sess-1",
     );
+  },
+);
+
+const hero = (id: string, status: Hero["status"], extra = {}): Hero => ({
+  id,
+  title: id,
+  type: "scout",
+  model: "claude-haiku-5-5",
+  status,
+  startedAt: 0,
+  actions: 1,
+  tokens: 10,
+  ...extra,
+});
+
+describe("squad", () => {
+  test("the list adds, finishes and stops agents", () => {
+    const known = [
+      hero("a", "running", { listed: true }),
+      hero("b", "running"),
+      hero("c", "running", { listed: true }),
+      hero("d", "done", { listed: true }),
+    ];
+    const next = reconcileHeroes(
+      known,
+      [
+        { id: "c", status: "completed", type: "scout" },
+        { id: "e", status: "running", type: "builder", description: "Build" },
+        { id: "f", status: "failed", type: "builder" },
+      ],
+      500,
+    );
+    const by = (id: string) => next.find((x) => x.id === id);
+    // listed before, now gone: its loop ended without a turn.complete
+    expect(by("a")?.status).toBe("stopped");
+    expect(by("a")?.endedAt).toBe(500);
+    // never listed (a remote agent): left to its own events
+    expect(by("b")?.status).toBe("running");
+    expect(by("c")?.status).toBe("done");
+    expect(by("d")?.status).toBe("done");
+    expect(by("e")?.title).toBe("Build");
+    expect(by("e")?.listed).toBe(true);
+    // finished before we ever saw it: nothing to show
+    expect(by("f")).toBeUndefined();
+  });
+
+  test("a spawn keeps what the list and the first steps already told", () => {
+    const early = hero("a", "running", {
+      model: "claude-opus-5-5",
+      actions: 4,
+      startedAt: 100,
+      title: "a",
+    });
+    const merged = mergeSpawned(
+      early,
+      hero("a", "running", { actions: 0, startedAt: 300, title: "Recon" }),
+    );
+    expect(merged.actions).toBe(4);
+    expect(merged.startedAt).toBe(100);
+    expect(merged.title).toBe("Recon");
+    expect(merged.model).toBe("claude-opus-5-5");
+  });
+
+  test("the squad stays bounded and its totals stay right", () => {
+    const list = [
+      hero("x", "failed"),
+      ...Array.from({ length: 5 }, (_, i) => hero(`d${i}`, "done")),
+      hero("run", "running"),
+    ];
+    const r = trimHeroes(list, EMPTY_RETIRED, 2);
+    expect(r.list.map((x) => x.id)).toEqual(["d3", "d4", "run"]);
+    expect(r.retired.total).toBe(4);
+    expect(r.retired.done).toBe(3);
+    expect(r.retired.failed).toBe(1);
+    expect(r.retired.streak).toBe(3);
+    expect(r.retired.actions).toBe(4);
+    expect(r.retired.tokens).toBe(40);
+    // the streak runs on through the agents still listed
+    expect(streakWith(["done", "done"], r.retired)).toBe(5);
+    expect(streakWith(["failed", "done"], r.retired)).toBe(1);
+    // trimming again folds in on top
+    const again = trimHeroes(r.list, r.retired, 0);
+    expect(again.list.map((x) => x.id)).toEqual(["run"]);
+    expect(again.retired.total).toBe(6);
+    expect(again.retired.streak).toBe(5);
+  });
+
+  test("trimming drops the longest finished first and never a lingering one", () => {
+    const now = 100_000;
+    const list = [
+      hero("late", "done", { endedAt: 90_000 }),
+      hero("early", "failed", { endedAt: 10_000 }),
+      hero("fresh", "done", { endedAt: now - FRESH_DONE_MS + 1 }),
+      hero("mid", "done", { endedAt: 50_000 }),
+    ];
+    const r = trimHeroes(list, EMPTY_RETIRED, 2, now);
+    // spawn order would drop "late" first; endedAt says "early" and "mid"
+    expect(r.list.map((x) => x.id)).toEqual(["late", "fresh"]);
+    expect(r.retired.total).toBe(2);
+    expect(r.retired.failed).toBe(1);
+    expect(r.retired.streak).toBe(1);
+    // only lingering agents over the limit: nothing goes until they settle
+    const lingering = [
+      hero("a", "done", { endedAt: now - 1000 }),
+      hero("b", "done", { endedAt: now - 2000 }),
+    ];
+    const kept = trimHeroes(lingering, EMPTY_RETIRED, 0, now);
+    expect(kept.list).toBe(lingering);
+    expect(kept.retired).toBe(EMPTY_RETIRED);
+    const later = trimHeroes(lingering, EMPTY_RETIRED, 0, now + FRESH_DONE_MS);
+    expect(later.list).toEqual([]);
+    expect(later.retired.total).toBe(2);
+  });
+});
+
+test(
+  "an agent that vanishes from the list is stopped, shown briefly, then leaves",
+  { options: { language: "en" } },
+  async ($, on) => {
+    const clock = mock.clock(on);
+    mock.store(on);
+    startHooks(on, "sess-squad");
+    let listed: { id: string; status: string; type: string }[] = [];
+    on("agent.list", () => ({ value: listed }) as never);
+    on("agent.spawn", () => ({
+      model: "claude-haiku-5-5",
+      agentId: "agent-1",
+    }));
+    await $.session.start({ cwd: "/repo", source: "startup" } as never);
+    await $.agent.spawn({ prompt: "p", description: "Map the repo" } as never);
+    listed = [{ id: "agent-1", status: "running", type: "scout" }];
+    await clock.advance(3000);
+    listed = [];
+    await clock.advance(3000);
+
+    const pane = await $.ui.mount({
+      plugin: "vanguard",
+      surface: "terminal",
+      component: "Pane",
+      props: { ...PANE_PROPS, bodyColumns: 150 },
+      requestId: "vanguard",
+    });
+    expect(await pane.find({ type: "Text", text: "Map the repo" })).toBeDefined();
+    expect(await pane.find({ type: "Text", text: "Stopped" })).toBeDefined();
+
+    await clock.advance(7000);
+    await pane.unmount();
+    const later = await $.ui.mount({
+      plugin: "vanguard",
+      surface: "terminal",
+      component: "Pane",
+      props: { ...PANE_PROPS, bodyColumns: 150 },
+      requestId: "vanguard",
+    });
+    expect(await later.find({ type: "Text", text: "Map the repo" })).toBeUndefined();
+    expect(
+      await later.find({ type: "Text", text: "No subagents running" }),
+    ).toBeDefined();
+    await later.press({ key: "tab-log" });
+    expect(await later.find({ type: "Text", text: /Map the repo/ })).toBeDefined();
+  },
+);
+
+describe("context guard", () => {
+  test("thresholds are made sane", () => {
+    expect(guardThresholds(70, 85)).toEqual({ warn: 70, critical: 85 });
+    expect(guardThresholds(90, 80)).toEqual({ warn: 90, critical: 91 });
+    expect(guardThresholds("x", undefined)).toEqual({ warn: 70, critical: 85 });
+    expect(guardThresholds(-5, 400)).toEqual({ warn: 1, critical: 100 });
+    expect(guardThresholds(99.6, 99)).toEqual({ warn: 99, critical: 100 });
+    expect(contextLevel(95, 90, 91)).toBe("critical");
+  });
+
+  test("the alert fires once per climb and re-arms below the warning", () => {
+    let armed = true;
+    const fired: boolean[] = [];
+    for (const level of [
+      "ok",
+      "critical",
+      "critical",
+      "warn",
+      "critical",
+      "ok",
+      "critical",
+    ] as const) {
+      const s = guardStep(armed, level);
+      armed = s.armed;
+      fired.push(s.alert);
+    }
+    expect(fired).toEqual([false, true, false, false, false, false, true]);
+  });
+
+  test("the snapshot says what started it and how full the window was", () => {
+    const md = handoffMarkdown({
+      at: 0,
+      sessionId: "s",
+      cwd: "/r",
+      model: "m",
+      tokensBefore: 170_000,
+      contextPercent: 85.4,
+      trigger: "auto",
+      heroes: [
+        {
+          id: "a",
+          title: "Tests",
+          type: "verifier",
+          model: "claude-haiku-5-5",
+          status: "running",
+          startedAt: 0,
+          actions: 2,
+          lastAction: "Bash",
+          lastDetail: "npm test",
+        },
+      ],
+      summary: "x",
+      path: "/p.md",
+    });
+    expect(md).toContain("auto compaction · context before compaction 170k, 85%");
+    expect(md).toContain("· last: Bash npm test");
+    expect(md).not.toContain("Recently finished");
+  });
+});
+
+test(
+  "the guard toasts once when the context turns critical",
+  { options: { language: "en", ctxWarn: 70, ctxCritical: 85 } },
+  async ($, on) => {
+    mock.clock(on);
+    const toasts: string[] = [];
+    on("session.measure", (_$, e) => ({ changed: e.changed }));
+    on("ui.toast", (_$, e) => {
+      toasts.push(String((e as { text?: string }).text ?? e));
+      return { value: undefined } as never;
+    });
+    const measure = (percent: number) =>
+      ($ as any).session.measure({
+        context: { window: 200_000, tokens: percent * 2000, percent },
+        rateLimits: [],
+        changed: ["context"],
+      });
+    for (const p of [40, 86.6, 90, 75, 88, 50, 91]) await measure(p);
+    const alerts = toasts.filter((t) => t.includes("/handoff"));
+    expect(alerts).toHaveLength(2);
+    // the toast shows a whole percent
+    expect(alerts[0]).toContain("87%");
+    expect(alerts[0]).not.toContain("86.6");
+
+    const band = await $.ui.mount({
+      plugin: "vanguard",
+      surface: "terminal",
+      component: "AbovePrompt",
+      props: { hasSurvey: false } as never,
+    });
+    expect(await band.find({ type: "Button", key: "handoff" })).toBeDefined();
+  },
+);
+
+describe("limits", () => {
+  test("the forecast reads only the readings since the last reset", () => {
+    const m = 60_000;
+    // 80% before a reset, then climbing from 5% by 1% a minute
+    const points = [
+      { at: 0, value: 80 },
+      { at: 5 * m, value: 82 },
+      { at: 10 * m, value: 5 },
+      { at: 20 * m, value: 15 },
+    ];
+    expect(etaToFull(points, 20 * m)).toBe(20 * m + 85 * m);
+    // too little since the reset to tell
+    expect(etaToFull(points.slice(0, 3), 10 * m)).toBeUndefined();
+    // already at the limit: no forecast
+    expect(
+      etaToFull(
+        [
+          { at: 0, value: 90 },
+          { at: 10 * m, value: 100 },
+        ],
+        10 * m,
+      ),
+    ).toBeUndefined();
+  });
+
+  test("what is left stays within 0 and 100", () => {
+    expect(percentLeft(23.5)).toBe(76.5);
+    expect(percentLeft(120)).toBe(0);
+    expect(percentLeft(-3)).toBe(100);
+    expect(percentLeft(Number.NaN)).toBe(100);
+  });
+
+  test("a rate window past its reset reads as untouched", () => {
+    const now = Date.UTC(2026, 9, 9, 12, 0);
+    const past = new Date(now - 60_000).toISOString();
+    const ahead = new Date(now + 60_000).toISOString();
+    expect(isPastReset(past, now)).toBe(true);
+    expect(isPastReset(new Date(now).toISOString(), now)).toBe(true);
+    expect(isPastReset(ahead, now)).toBe(false);
+    expect(isPastReset(undefined, now)).toBe(false);
+    expect(isPastReset("soon", now)).toBe(false);
+    expect(rateLeft({ percentUsed: 97, resetsAt: past }, now)).toBe(100);
+    expect(rateLeft({ percentUsed: 97, resetsAt: ahead }, now)).toBe(3);
+    expect(rateLeft({ percentUsed: 120 }, now)).toBe(0);
+  });
+});
+
+test(
+  "a passed reset reads as a fresh window, and an exceeded budget as empty",
+  { options: { language: "en" } },
+  async ($, on) => {
+    const now = Date.UTC(2026, 9, 9, 12, 0);
+    mock.clock(on, { now });
+    on("session.measure", (_$, e) => ({ changed: e.changed }));
+    on("agent.spawn", () => ({
+      model: "claude-haiku-5-5",
+      agentId: "agent-1",
+    }));
+    const resetAt = Date.UTC(2026, 9, 9, 11, 0);
+    await ($ as any).session.measure({
+      context: { window: 200_000, tokens: 20_000, percent: 10 },
+      rateLimits: [
+        {
+          kind: "five_hour",
+          percentUsed: 97,
+          resetsAt: new Date(resetAt).toISOString(),
+        },
+        { kind: "spend_limit", percentUsed: 120 },
+      ],
+      changed: ["context", "rateLimits"],
+    });
+    const pane = await $.ui.mount({
+      plugin: "vanguard",
+      surface: "terminal",
+      component: "Pane",
+      props: { ...PANE_PROPS, bodyColumns: 150 },
+      requestId: "vanguard",
+    });
+    const texts = (await pane.findAll({ type: "Text" })).map((x: any) =>
+      String(x.text),
+    );
+    expect(texts).toContain(
+      `reset at ${fmtClock(resetAt)} · fresh reading on the next reply`,
+    );
+    expect(texts.some((t: string) => t.trim() === "3%")).toBe(false);
+    expect(texts.some((t: string) => /^-\d+%/.test(t.trim()))).toBe(false);
+    expect(texts.some((t: string) => t.trim() === "0%")).toBe(true);
+
+    // the band agrees with the pane: a fresh window, not the stale 3%
+    await $.agent.spawn({ prompt: "p", description: "Recon" } as never);
+    const band = await $.ui.mount({
+      plugin: "vanguard",
+      surface: "terminal",
+      component: "AbovePrompt",
+      props: { hasSurvey: false } as never,
+    });
+    expect(await band.find({ type: "Text", text: "5h 100%" })).toBeDefined();
+    expect(await band.find({ type: "Text", text: "5h 3%" })).toBeUndefined();
+  },
+);
+
+describe("rewards", () => {
+  test("a chime rings only when sound is on, the moment is live and none just rang", () => {
+    expect(mayChime(true, false, undefined, 0)).toBe(true);
+    expect(mayChime(false, false, undefined, 0)).toBe(false);
+    expect(mayChime(true, true, undefined, 0)).toBe(false);
+    expect(mayChime(true, false, 1000, 1000 + CHIME_GAP_MS - 1)).toBe(false);
+    expect(mayChime(true, false, 1000, 1000 + CHIME_GAP_MS)).toBe(true);
+  });
+});
+
+for (const sound of [true, false])
+  test(
+    `unlocks found at start are quiet; a live one toasts and chimes once (sound ${sound ? "on" : "off"})`,
+    { options: { language: "en", sound } },
+    async ($, on) => {
+      mock.clock(on);
+      mock.env(on, { HOME: "/home/u" });
+      const files: Record<string, string> = {
+        [PROFILE]: JSON.stringify({
+          version: 1,
+          sessions: { "sess-1": OLD_SESSION },
+          unlocked: [],
+          collapsed: {},
+        }),
+      };
+      memFs(on, files);
+      mock.store(on);
+      on("session.start", () => ({ cwd: "/repo" }) as never);
+      on("session.id", () => ({ value: "sess-quiet" }) as never);
+      on("command.register", () => ({ value: undefined }) as never);
+      on("ui.open", () => ({ value: undefined }) as never);
+      const toasts: string[] = [];
+      on("ui.toast", (_$, e) => {
+        toasts.push(String((e as { text?: string }).text ?? e));
+        return { value: undefined } as never;
+      });
+      let chimes = 0;
+      on("audio.play", () => {
+        chimes += 1;
+        return { value: undefined } as never;
+      });
+      let n = 0;
+      on("agent.spawn", () => ({
+        model: "claude-haiku-5-5",
+        agentId: `agent-${++n}`,
+      }));
+      await $.session.start({ cwd: "/repo", source: "startup" } as never);
+      // first, squad and flawless came from the past session: recorded, not announced
+      const saved = JSON.parse(files[PROFILE] ?? "{}");
+      expect(saved.unlocked.map((x: { id: string }) => x.id)).toContain("squad");
+      expect(toasts.filter((t) => t.startsWith("Achievement"))).toHaveLength(0);
+      expect(chimes).toBe(0);
+
+      // six more agents reach Legion (10 in all), and maybe a level with it
+      for (let i = 0; i < 6; i++)
+        await $.agent.spawn({ prompt: "p", description: `T${i}` } as never);
+      expect(
+        toasts.filter((t) => t.startsWith("Achievement unlocked: Legion")),
+      ).toHaveLength(1);
+      expect(chimes).toBe(sound ? 1 : 0);
+    },
+  );
+
+for (const surface of ["terminal", "desktop"] as const)
+  test(
+    `at 80 columns the tiles go three to a row (${surface})`,
+    { options: { language: "en" } },
+    async ($, on) => {
+      mock.clock(on);
+      const mount = (bodyColumns: number) =>
+        $.ui.mount({
+          plugin: "vanguard",
+          surface,
+          component: "Pane",
+          props: { ...PANE_PROPS, bodyColumns },
+          requestId: "vanguard",
+        });
+      const at80 = await mount(80);
+      expect(await at80.find({ key: "tr-1" })).toBeDefined();
+      expect(await at80.find({ key: "tc-3" })).toBeUndefined();
+      expect(await at80.find({ type: "Text", text: "Limits" })).toBeDefined();
+      await at80.unmount();
+      const wide = await mount(150);
+      expect(await wide.find({ key: "tr-1" })).toBeUndefined();
+      expect(await wide.find({ key: "tc-4" })).toBeDefined();
+    },
+  );
+
+test(
+  "the band keeps to five model icons however large the squad",
+  { options: { language: "en" } },
+  async ($, on) => {
+    mock.clock(on);
+    on("ui.toast", () => ({ value: undefined }) as never);
+    let n = 0;
+    on("agent.spawn", () => ({
+      model: "claude-haiku-5-5",
+      agentId: `agent-${++n}`,
+    }));
+    for (let i = 0; i < 9; i++)
+      await $.agent.spawn({ prompt: "p", description: `T${i}` } as never);
+    const band = await $.ui.mount({
+      plugin: "vanguard",
+      surface: "terminal",
+      component: "AbovePrompt",
+      props: { hasSurvey: false } as never,
+    });
+    const haikus = (await band.findAll({ type: "Text" })).filter(
+      (x: any) => x.text === GLYPHS.feather,
+    );
+    expect(haikus).toHaveLength(5);
+    expect(await band.find({ type: "Text", text: "+4" })).toBeDefined();
   },
 );
 

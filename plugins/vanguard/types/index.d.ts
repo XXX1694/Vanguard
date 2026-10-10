@@ -13,6 +13,19 @@ export type Hero = {
   lastAction?: string;
   lastDetail?: string;
   tokens?: number;
+  /** True once `$.agent.list()` has named it, so its absence there later means it is gone. */
+  listed?: boolean;
+};
+
+/** Finished agents trimmed from the live list, kept as counters so totals stay right. */
+export type Retired = {
+  total: number;
+  done: number;
+  failed: number;
+  /** Successes in a row at the newest end of the trimmed agents. */
+  streak: number;
+  actions: number;
+  tokens: number;
 };
 
 export type RateWindow = {
@@ -89,6 +102,10 @@ export type Usage = {
   peak: number;
   snapshots: number;
   lastSkill?: { name: string; at: number };
+  /** Finished agents dropped from `heroes` to keep it bounded. */
+  retired?: Retired;
+  /** Ids already folded into `retired` that may still sit in `heroes` (dropped on the next trim). */
+  trimmed?: string[];
 };
 
 export type Unlock = { id: string; at: number };

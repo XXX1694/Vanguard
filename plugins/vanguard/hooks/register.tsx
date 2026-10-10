@@ -43,6 +43,16 @@ import {
 } from "./icons";
 import {
   ACHIEVEMENTS,
+  addRetired,
+  EMPTY_RETIRED,
+  FRESH_DONE_MS,
+  KEEP_FINISHED,
+  rateLeft,
+  mergeSpawned,
+  reconcileHeroes,
+  streakWith,
+  trimHeroes,
+  type ListedAgent,
   type VanguardStats,
   bar,
   burnPerHour,
@@ -56,8 +66,11 @@ import {
   fmtReset,
   fmtTokens,
   emptyRecord,
+  guardStep,
+  guardThresholds,
   handoffMarkdown,
   levelOf,
+  mayChime,
   mergeRecords,
   PART_COLORS,
   shortPath,
@@ -70,10 +83,11 @@ import {
   orchestratorRules,
   nextAchievement,
   serverLabel,
-  successStreak,
   meterColor,
   modelBadge,
   pad,
+  percentLeft,
+  isPastReset,
   PRESERVE_INSTRUCTIONS,
   pulseBar,
   pushSample,
@@ -124,9 +138,10 @@ const levelSeen = atom({ plugin: "vanguard", key: "levelSeen" } as const, 0);
 
 /** How long a banner stays, and a finished agent's check keeps popping. */
 const CELEBRATE_MS = 8000;
-const FRESH_DONE_MS = 6000;
 /** At most this many animated drawings at once on a remote surface: each is a frame of its own. */
 const FRAME_BUDGET = 8;
+/** At most this many model icons in the band, so it keeps to one line at 80 columns. */
+const BAND_ICONS = 5;
 
 /** The mod's settings, from the manifest's userConfig (the config menu). */
 type Settings = {
@@ -155,6 +170,10 @@ const DEFAULTS: Settings = {
 };
 let settings: Settings = DEFAULTS;
 let sessionId = "";
+/** Whether the guard may raise its "context is critical" toast again. */
+let guardArmed = true;
+/** When the last chime rang, so a burst of unlocks rings once. */
+let lastChimeAt: number | undefined;
 let lastSaved = "";
 
 const STORE_SESSIONS = "sessions";
@@ -230,11 +249,6 @@ const EMPTY_USAGE: Usage = {
   snapshots: 0,
 };
 
-const DONE_STATUSES: Record<string, HeroStatus> = {
-  completed: "done",
-  failed: "failed",
-  killed: "stopped",
-};
 const STATUS_VIEW: Record<HeroStatus, { icon: IconName; color: string }> = {
   running: { icon: "activity", color: "warning" },
   done: { icon: "check", color: "success" },
@@ -323,40 +337,47 @@ function toMeters(u: any, old?: Meters | null): Meters {
   };
 }
 
+/** Brings the squad in line with the engine's agent list, in one write. */
 async function syncAgents($: Engine): Promise<void> {
-  let listed: any[] = [];
+  let listed: ListedAgent[] = [];
   try {
     listed = await $.agent.list();
   } catch {
     return;
   }
   const now = await $.clock.now();
-  const known: Hero[] = await read($, heroes);
-  const byId = new Map(known.map((x) => [x.id, x]));
-  const fresh: Hero[] = [];
-  for (const a of listed) {
-    const hero = byId.get(a.id);
-    const finished = DONE_STATUSES[a.status];
-    if (!hero && !finished) {
-      fresh.push({
-        id: a.id,
-        title: a.description || a.name || a.type,
-        type: a.type,
-        model: "?",
-        status: "running",
-        startedAt: now,
-        actions: 0,
-      });
-    } else if (hero && hero.status === "running" && finished) {
-      await patchHero($, a.id, (x) => ({
-        ...x,
-        status: finished,
-        endedAt: now,
-      }));
-    }
-  }
-  if (fresh.length > 0)
-    await update($, heroes, (list: Hero[]) => [...list, ...fresh]);
+  await update($, heroes, (list: Hero[]) => reconcileHeroes(list, listed, now));
+}
+
+/**
+ * Keeps the squad bounded: old finished agents become counters in `usage.retired`.
+ * The counters are written first, with the ids they cover, and the agents are
+ * dropped after: a stop in between is finished by the next trim, never counted twice.
+ */
+async function trimSquad($: Engine): Promise<void> {
+  const drop = async (ids: string[]) => {
+    const gone = new Set(ids);
+    await update($, heroes, (list: Hero[]) =>
+      list.some((x) => gone.has(x.id))
+        ? list.filter((x) => !gone.has(x.id))
+        : list,
+    );
+  };
+  const before: Usage | null = await read($, usage);
+  const pending = before?.trimmed ?? [];
+  if (pending.length > 0) await drop(pending);
+  const list: Hero[] = await read($, heroes);
+  const now = await $.clock.now();
+  const r = trimHeroes(list, EMPTY_RETIRED, KEEP_FINISHED, now);
+  if (r.list.length === list.length) return;
+  const kept = new Set(r.list.map((x) => x.id));
+  const ids = list.filter((x) => !kept.has(x.id)).map((x) => x.id);
+  await bumpUsage($, (u) => ({
+    ...u,
+    retired: addRetired(u.retired ?? EMPTY_RETIRED, r.retired),
+    trimmed: ids,
+  }));
+  await drop(ids);
 }
 
 /** Reads what the session can reach: MCP servers from the tool list, plugins and skills from the commands. */
@@ -460,15 +481,20 @@ function recordOf(
   at: number,
 ): SessionRecord {
   const finished = list.filter((x) => x.status !== "running");
+  const retired = u.retired ?? EMPTY_RETIRED;
   const count = (...names: string[]) =>
     names.reduce((n, k) => n + (u.tools[k] ?? 0), 0);
 
   return {
     ...emptyRecord(sessionId, at),
-    agentsTotal: list.length,
-    agentsDone: finished.filter((x) => x.status === "done").length,
+    agentsTotal: list.length + retired.total,
+    agentsDone:
+      finished.filter((x) => x.status === "done").length + retired.done,
     peakParallel: u.peak,
-    streak: successStreak(finished.map((x) => x.status)),
+    streak: streakWith(
+      finished.map((x) => x.status),
+      retired,
+    ),
     calls: Object.values(u.tools).reduce((a, b) => a + b, 0),
     mcpCalls: Object.values(u.mcp).reduce((a, b) => a + b, 0),
     mcpServers: Object.keys(u.mcp),
@@ -587,8 +613,25 @@ async function lifetimeRecord($: Engine): Promise<SessionRecord> {
   return mergeRecords(life?.others ?? emptyRecord(), await currentRecord($));
 }
 
-/** Unlocks what the counters now reach, with a toast and a log line each. */
-async function checkAchievements($: Engine): Promise<void> {
+/** Plays the chime when the moment may ring (see `mayChime`). */
+function chime($: Engine, at: number, isQuiet: boolean): void {
+  if (!mayChime(settings.sound, isQuiet, lastChimeAt, at)) return;
+  lastChimeAt = at;
+  void $.audio
+    .play({ asset: "sounds/achievement.wav" }, { gain: 0.6 })
+    .catch(() => {});
+}
+
+/**
+ * Unlocks what the counters now reach: a log line for each, one toast and one
+ * chime for the lot. `quiet` (the check at session start, which finds what past
+ * sessions earned) records and shows the banner without a toast or a sound.
+ */
+async function checkAchievements(
+  $: Engine,
+  options: { quiet?: boolean } = {},
+): Promise<void> {
+  const isQuiet = options.quiet === true;
   const have: Unlock[] = (await read($, unlocked)) ?? [];
   const life = await lifetimeRecord($);
   const fresh = newlyUnlocked(
@@ -598,8 +641,9 @@ async function checkAchievements($: Engine): Promise<void> {
   const at = await $.clock.now();
   const lvl = levelOf(xpOf(life) + (have.length + fresh.length) * 150).level;
   const seen: number = (await read($, levelSeen)) ?? 0;
-  if (seen === 0) {
-    await update($, levelSeen, () => lvl);
+  const T = await textsFor($);
+  if (seen === 0 || isQuiet) {
+    if (lvl !== seen) await update($, levelSeen, () => lvl);
   } else if (lvl > seen) {
     await update($, levelSeen, () => lvl);
     await update(
@@ -607,12 +651,9 @@ async function checkAchievements($: Engine): Promise<void> {
       celebration,
       (): Celebration => ({ kind: "level", level: lvl, at }),
     );
-    $.ui.toast((await textsFor($)).newLevel(lvl));
+    $.ui.toast(T.newLevel(lvl));
     await addLog($, "trophy", "warning", "newLevel", lvl);
-    if (settings.sound)
-      void $.audio
-        .play({ asset: "sounds/achievement.wav" }, { gain: 0.6 })
-        .catch(() => {});
+    chime($, at, false);
   }
   if (fresh.length === 0) return;
   const next = [...have, ...fresh.map((a) => ({ id: a.id, at }))];
@@ -621,32 +662,31 @@ async function checkAchievements($: Engine): Promise<void> {
     ...p,
     unlocked: unionUnlocks(p.unlocked, next),
   }));
-  const first = fresh[0];
-  if (first)
-    await update(
-      $,
-      celebration,
-      (): Celebration => ({
-        kind: "achievement",
-        ids: fresh.map((a) => a.id),
-        at,
-      }),
-    );
-  const T = await textsFor($);
-  for (const a of fresh) {
-    const text = T.ach[a.id] ?? a;
-    $.ui.toast(T.achToast(text.title, text.hint));
-    await addLog($, "medal", "warning", "logAch", a.id);
-  }
-  if (settings.sound)
-    void $.audio
-      .play({ asset: "sounds/achievement.wav" }, { gain: 0.6 })
-      .catch(() => {});
+  await update(
+    $,
+    celebration,
+    (): Celebration => ({
+      kind: "achievement",
+      ids: fresh.map((a) => a.id),
+      at,
+    }),
+  );
+  for (const a of fresh) await addLog($, "medal", "warning", "logAch", a.id);
+  if (isQuiet) return;
+  const first = fresh[0]!;
+  const text = T.ach[first.id] ?? first;
+  $.ui.toast(
+    T.achToast(
+      fresh.length > 1 ? T.andMore(text.title, fresh.length - 1) : text.title,
+      text.hint,
+    ),
+  );
+  chime($, at, false);
 }
 
 async function handoffPath($: Engine, at: number): Promise<string> {
   const home = (await $.env.get("HOME")) ?? ".";
-  const stamp = new Date(at).toISOString().slice(0, 16).replace(/[:T]/g, "-");
+  const stamp = new Date(at).toISOString().slice(0, 19).replace(/[:T]/g, "-");
 
   return `${home}/.claude/handoffs/${stamp}.md`;
 }
@@ -704,12 +744,13 @@ async function startUp($: Engine): Promise<void> {
   await quietly(() => syncAgents($));
   await quietly(() => refreshBreakdown($));
   await quietly(() => refreshArsenal($));
-  await quietly(() => checkAchievements($));
+  await quietly(() => checkAchievements($, { quiet: true }));
   let ticks = 0;
   $.clock.every(1000, () => {
     ticks += 1;
     void quietly(async () => {
       if (ticks % 3 === 0) await syncAgents($);
+      if (ticks % 30 === 0) await trimSquad($);
       if (ticks % 30 === 0) await refreshBreakdown($);
       if (ticks % 60 === 0) await refreshArsenal($);
       if (ticks % 15 === 0) await saveSession($);
@@ -731,6 +772,11 @@ async function startUp($: Engine): Promise<void> {
 
 export const register: Register = (on, options) => {
   settings = { ...DEFAULTS, ...(options as Partial<Settings>) };
+  const limits = guardThresholds(settings.ctxWarn, settings.ctxCritical);
+  settings.ctxWarn = limits.warn;
+  settings.ctxCritical = limits.critical;
+  guardArmed = true;
+  lastChimeAt = undefined;
 
   on("session.start", async ($, e, next) => {
     await quietly(() => startUp($));
@@ -756,7 +802,7 @@ export const register: Register = (on, options) => {
   });
 
   on("command.run", { command: "vanguard" }, async ($) => {
-    await $.ui.open({ id: PANE, title: TITLE });
+    await $.ui.open({ id: PANE, title: TITLE }).catch(() => {});
 
     return { text: (await textsFor($)).opened };
   });
@@ -779,10 +825,13 @@ export const register: Register = (on, options) => {
           startedAt: now,
           actions: 0,
         };
-        await update($, heroes, (list: Hero[]) => [
-          ...list.filter((x) => x.id !== hero.id),
-          hero,
-        ]);
+        await update($, heroes, (list: Hero[]) => {
+          const old = list.find((x) => x.id === hero.id);
+          return [
+            ...list.filter((x) => x.id !== hero.id),
+            mergeSpawned(old, hero),
+          ];
+        });
         const badge = modelBadge(started.model);
         await addLog($, badge.icon, badge.color, "logLaunched", hero.title);
         const live = ((await read($, heroes)) as Hero[]).filter(
@@ -794,7 +843,7 @@ export const register: Register = (on, options) => {
     });
 
     return started;
-  });
+  }).catch(($, e, next) => next(e));
 
   on("turn.step", async function* ($, e, next) {
     await quietly(async () => {
@@ -873,7 +922,7 @@ export const register: Register = (on, options) => {
     });
 
     return next(e);
-  });
+  }).catch(($, e, next) => next(e));
 
   on("turn.complete", async ($, e, next) => {
     await quietly(async () => {
@@ -957,6 +1006,16 @@ export const register: Register = (on, options) => {
           (a, b) => a.ctx === b.ctx && a.five === b.five,
         ),
       );
+      const percent = e.context?.percent;
+      if (percent !== undefined) {
+        const step = guardStep(
+          guardArmed,
+          contextLevel(percent, settings.ctxWarn, settings.ctxCritical),
+        );
+        guardArmed = step.armed;
+        if (step.alert)
+          $.ui.toast((await textsFor($)).guardToast(Math.round(percent)));
+      }
     });
 
     return next(e);
@@ -968,6 +1027,7 @@ export const register: Register = (on, options) => {
     const instructions = [e.instructions, PRESERVE_INSTRUCTIONS]
       .filter(Boolean)
       .join("\n\n");
+    const before: Meters | null = await read($, meters).catch(() => null);
     const result = await next({ ...e, instructions });
     if (result.skip !== undefined) return result;
     try {
@@ -984,6 +1044,8 @@ export const register: Register = (on, options) => {
         cwd: await $.session.cwd(),
         model: await $.session.model(),
         tokensBefore: result.tokensBefore,
+        contextPercent: before?.contextPercent,
+        trigger: e.trigger,
         heroes: await read($, heroes),
         summary,
         path,
@@ -1013,7 +1075,7 @@ export const register: Register = (on, options) => {
     }
 
     return result;
-  });
+  }).catch(($, e, next) => next(e));
 
   on("ui.render", { component: "Pane", requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e);
@@ -1039,11 +1101,23 @@ export const register: Register = (on, options) => {
 
     const running = list.filter((x) => x.status === "running");
     const finished = list.filter((x) => x.status !== "running");
-    const won = list.filter((x) => x.status === "done").length;
-    const lost = list.filter((x) => x.status === "failed").length;
-    const agentCalls = list.reduce((s, x) => s + x.actions, 0);
+    // The squad: who runs, and who just finished, shown with the outcome for a moment.
+    const squad = list.filter(
+      (x) =>
+        x.status === "running" || now - (x.endedAt ?? 0) < FRESH_DONE_MS,
+    );
+    const retired = used.retired ?? EMPTY_RETIRED;
+    const won =
+      list.filter((x) => x.status === "done").length + retired.done;
+    const lost =
+      list.filter((x) => x.status === "failed").length + retired.failed;
+    const agentsTotal = list.length + retired.total;
+    const finishedTotal = finished.length + retired.total;
+    const agentCalls =
+      list.reduce((s, x) => s + x.actions, 0) + retired.actions;
     const actions = agentCalls + (boss?.actions ?? 0);
-    const agentTokens = list.reduce((s, x) => s + (x.tokens ?? 0), 0);
+    const agentTokens =
+      list.reduce((s, x) => s + (x.tokens ?? 0), 0) + retired.tokens;
     const life: Lifetime | null = await read($, lifetime);
     const folded: Record<string, boolean> = (await read($, collapsed)) ?? {};
     const sessionRec = recordOf(list, used, m?.usd, now);
@@ -1151,6 +1225,7 @@ export const register: Register = (on, options) => {
       color: string,
       size = 14,
       key?: string,
+      alt?: string,
     ): RenderNode => {
       const known = name in GLYPHS;
       if (Svg && known)
@@ -1158,7 +1233,7 @@ export const register: Register = (on, options) => {
           <Svg
             key={key}
             source={iconSvg(name as IconName, color)}
-            alt={name}
+            alt={alt ?? name}
             width={size}
             height={size}
           />
@@ -1434,7 +1509,7 @@ export const register: Register = (on, options) => {
         "users",
         "warning",
         T.tileAgents,
-        `${running.length} / ${list.length}`,
+        `${running.length} / ${agentsTotal}`,
         T.doneFailed(won, lost),
       ),
       tile(
@@ -1451,12 +1526,8 @@ export const register: Register = (on, options) => {
         "merged",
         T.tileTokens,
         agentTokens ? fmtTokens(agentTokens) : "—",
-        list.length
-          ? T.average(
-              fmtTokens(
-                Math.round(agentTokens / Math.max(1, finished.length || 1)),
-              ),
-            )
+        agentTokens && finishedTotal
+          ? T.average(fmtTokens(Math.round(agentTokens / finishedTotal)))
           : " ",
       ),
       tile(
@@ -1468,8 +1539,9 @@ export const register: Register = (on, options) => {
         burn !== undefined ? T.perHour(burn.toFixed(2)) : " ",
       ),
     ];
-    // One line of five equal tiles; pairs only in the compact layout.
-    const perRow = isCompact ? 2 : 5;
+    // Five equal tiles on one line where they fit (each needs about 20
+    // cells); three to a row at medium widths such as 80 columns.
+    const perRow = isCompact ? 2 : inner >= 110 ? 5 : 3;
     const tileRows: RenderNode[][] = [];
     for (let i = 0; i < tileList.length; i += perRow)
       tileRows.push(tileList.slice(i, i + perRow));
@@ -1510,7 +1582,7 @@ export const register: Register = (on, options) => {
           "users",
           "warning",
           T.figAgents,
-          `${running.length}/${list.length}`,
+          `${running.length}/${agentsTotal}`,
           lost ? `${lost} ✗` : "",
         )}
         {figure(
@@ -1716,6 +1788,7 @@ export const register: Register = (on, options) => {
     );
     const rateNote = (kind: string, resetsAt?: string) => {
       const at = resetsAt ? Date.parse(resetsAt) : NaN;
+      if (isPastReset(resetsAt, now)) return T.resetPassed(fmtClock(at));
       const reset = Number.isNaN(at)
         ? ""
         : T.resets(fmtReset(at, now, LOCALE[L]), dur(at - now));
@@ -1728,7 +1801,14 @@ export const register: Register = (on, options) => {
     const resBody = (
       <Box flexDirection="column" rowGap={space.inner}>
         {ctxUsed !== undefined
-          ? meter("ctx", "layers", T.ctx, 100 - ctxUsed, ctxNote, ctxSeries)
+          ? meter(
+              "ctx",
+              "layers",
+              T.ctx,
+              percentLeft(ctxUsed),
+              ctxNote,
+              ctxSeries,
+            )
           : line(
               "ctx",
               icon("layers", "inactive"),
@@ -1739,7 +1819,7 @@ export const register: Register = (on, options) => {
             r.kind,
             r.kind === "seven_day" ? "calendar" : "gauge",
             rateLabel(r.kind, T.rate),
-            100 - r.percentUsed,
+            rateLeft(r, now),
             rateNote(r.kind, r.resetsAt),
           ),
         )}
@@ -1787,6 +1867,7 @@ export const register: Register = (on, options) => {
           <Button
             key="compact"
             label={T.btnCompact}
+            hotkey="h"
             variant={ctx === "ok" ? "secondary" : "primary"}
             onPress={async () => $.ui.toast(await compactNow($))}
           />
@@ -1809,9 +1890,22 @@ export const register: Register = (on, options) => {
     );
 
     // ── Running agents ───────────────────────────────────────────────────
+    /** A squad member's lead mark: a spinner while it runs, then its outcome. */
+    const heroMark = (hero: Hero, color: string, size: number) =>
+      hero.status === "running"
+        ? live("loader", color, size)
+        : icon(
+            STATUS_VIEW[hero.status].icon,
+            STATUS_VIEW[hero.status].color,
+            size,
+            undefined,
+            T.status[hero.status],
+          );
+
     const agentCard = (hero: Hero) => {
       const badge = modelBadge(hero.model);
       const elapsed = (hero.endedAt ?? now) - hero.startedAt;
+      const isRunning = hero.status === "running";
 
       return (
         <Box
@@ -1828,7 +1922,7 @@ export const register: Register = (on, options) => {
           <Box justifyContent="space-between">
             {line(
               "model",
-              live("loader", badge.color, 14),
+              heroMark(hero, badge.color, 14),
               <Text bold color={badge.color}>
                 {hero.model === "?" ? T.modelPending : shortModel(hero.model)}
               </Text>,
@@ -1855,8 +1949,14 @@ export const register: Register = (on, options) => {
               <Text dimColor>{fmtTokens(hero.tokens)}</Text>
             ) : null}
           </Box>
-          {action("now", hero.lastAction, hero.lastDetail, cardWidth)}
-          {anim ? (
+          {isRunning ? (
+            action("now", hero.lastAction, hero.lastDetail, cardWidth)
+          ) : (
+            <Text color={STATUS_VIEW[hero.status].color}>
+              {T.status[hero.status]}
+            </Text>
+          )}
+          {anim && isRunning ? (
             <Text color={badge.color}>{pulseBar(now, cardWidth - frame)}</Text>
           ) : null}
           <Box
@@ -1880,23 +1980,30 @@ export const register: Register = (on, options) => {
 
     const agentRow = (hero: Hero) => {
       const badge = modelBadge(hero.model);
+      const isRunning = hero.status === "running";
 
       return (
         <Box key={hero.id} flexDirection="column">
           <Box justifyContent="space-between" columnGap={1}>
             {line(
               "t",
-              live("loader", badge.color, 13),
+              heroMark(hero, badge.color, 13),
               <Text bold wrap="truncate-end">
                 {clip(hero.title, inner - frame - 18)}
               </Text>,
             )}
             <Text dimColor>
-              {dur(now - hero.startedAt)} · {hero.actions}
+              {dur((hero.endedAt ?? now) - hero.startedAt)} · {hero.actions}
             </Text>
           </Box>
           <Box paddingLeft={2}>
-            {action("now", hero.lastAction, hero.lastDetail, inner)}
+            {isRunning ? (
+              action("now", hero.lastAction, hero.lastDetail, inner)
+            ) : (
+              <Text color={STATUS_VIEW[hero.status].color}>
+                {T.status[hero.status]}
+              </Text>
+            )}
           </Box>
         </Box>
       );
@@ -1913,7 +2020,7 @@ export const register: Register = (on, options) => {
       .join(" · ");
 
     const partyBody =
-      running.length === 0 ? (
+      squad.length === 0 ? (
         line(
           "empty",
           icon("bot", "inactive"),
@@ -1921,7 +2028,7 @@ export const register: Register = (on, options) => {
         )
       ) : isCompact ? (
         <Box flexDirection="column" rowGap={space.stack}>
-          {running.map(agentRow)}
+          {squad.map(agentRow)}
         </Box>
       ) : (
         <Box
@@ -1930,7 +2037,7 @@ export const register: Register = (on, options) => {
           columnGap={gutter}
           rowGap={space.stack}
         >
-          {running.map(agentCard)}
+          {squad.map(agentCard)}
         </Box>
       );
 
@@ -1964,7 +2071,7 @@ export const register: Register = (on, options) => {
                 </Text>
               )
             ) : (
-              icon(view.icon, view.color, 14, "s")
+              icon(view.icon, view.color, 14, "s", T.status[hero.status])
             )}
             {icon(badge.icon, badge.color, 12, "m")}
             <Text wrap="truncate-end">
@@ -2754,7 +2861,7 @@ export const register: Register = (on, options) => {
       return next(e);
     const T = dict(langOf(await read($, langPick)));
     const els = $.ui.resolve(e);
-    const { Box, Text } = els;
+    const { Box, Text, Button } = els;
     // The terminal table carries Svg too, and draws nothing for it: glyphs there.
     const Svg = e.surface !== "terminal" && "Svg" in els ? els.Svg : undefined;
     const icon = (name: IconName, color: string, key: string) =>
@@ -2772,6 +2879,7 @@ export const register: Register = (on, options) => {
         </Text>
       );
     const five = m?.rates.find((r) => r.kind === "five_hour");
+    const now = await $.clock.now();
     const ctxColor =
       ctx === "critical" ? "error" : ctx === "warn" ? "warning" : "subtle";
 
@@ -2781,20 +2889,30 @@ export const register: Register = (on, options) => {
         {running.length > 0 ? (
           <Text color="claude">{T.agentsWorking(running.length)}</Text>
         ) : null}
-        {running.map((x) => {
+        {running.slice(0, BAND_ICONS).map((x) => {
           const b = modelBadge(x.model);
           return icon(b.icon, b.color, `m-${x.id}`);
         })}
+        {running.length > BAND_ICONS ? (
+          <Text key="more" dimColor>{`+${running.length - BAND_ICONS}`}</Text>
+        ) : null}
         {m?.contextPercent !== undefined ? icon("layers", ctxColor, "c") : null}
         {m?.contextPercent !== undefined ? (
-          <Text color={ctxColor}>
-            {T.bandContext(100 - m.contextPercent)}
-            {ctx === "ok" ? "" : " · /handoff"}
-          </Text>
+          <Text color={ctxColor}>{T.bandContext(percentLeft(m.contextPercent))}</Text>
+        ) : null}
+        {m?.contextPercent !== undefined && ctx !== "ok" ? (
+          // One key from the focused band: h compacts and writes the snapshot.
+          <Button
+            key="handoff"
+            label="/handoff"
+            hotkey="h"
+            plain
+            onPress={async () => $.ui.toast(await compactNow($))}
+          />
         ) : null}
         {five ? icon("gauge", "subtle", "f") : null}
         {five ? (
-          <Text dimColor>{T.bandFive(Math.round(100 - five.percentUsed))}</Text>
+          <Text dimColor>{T.bandFive(Math.round(rateLeft(five, now)))}</Text>
         ) : null}
         {m?.usd !== undefined ? icon("coins", "subtle", "u") : null}
         {m?.usd !== undefined ? (

@@ -1,6 +1,6 @@
 // Pure helpers for Vanguard: no engine calls, so tests can reach them directly.
 
-import type { Hero, SessionRecord } from "../types";
+import type { Hero, Retired, SessionRecord } from "../types";
 
 import type { IconName } from "./icons";
 
@@ -72,6 +72,31 @@ export function bar(percent: number, width: number): string {
   const full = Math.round((clamped / 100) * width);
 
   return "█".repeat(full) + "░".repeat(width - full);
+}
+
+/** What is left of a window, 0–100: a spend limit can report more than 100 used. */
+export function percentLeft(percentUsed: number): number {
+  if (!Number.isFinite(percentUsed)) return 100;
+
+  return Math.max(0, Math.min(100, 100 - percentUsed));
+}
+
+/** A rate window whose reset is already behind us: no reply since, so nothing of the new one is used. */
+export function isPastReset(
+  resetsAt: string | undefined,
+  now: number,
+): boolean {
+  const at = resetsAt ? Date.parse(resetsAt) : NaN;
+
+  return !Number.isNaN(at) && at <= now;
+}
+
+/** What is left of a rate window, 0–100, reading a passed reset as a fresh window. */
+export function rateLeft(
+  rate: { percentUsed: number; resetsAt?: string },
+  now: number,
+): number {
+  return isPastReset(rate.resetsAt, now) ? 100 : percentLeft(rate.percentUsed);
 }
 
 /** Colour for a "how much is left" meter. */
@@ -234,6 +259,37 @@ export function contextLevel(
   return percentUsed < critical ? "warn" : "critical";
 }
 
+/**
+ * The guard's thresholds from the settings, made sane: whole percents, warn in
+ * 1–99, critical above warn and at most 100. A setting that is no number falls
+ * back to the default.
+ */
+export function guardThresholds(
+  warn: unknown,
+  critical: unknown,
+): { warn: number; critical: number } {
+  const num = (v: unknown, d: number) =>
+    typeof v === "number" && Number.isFinite(v) ? Math.round(v) : d;
+  const w = Math.min(99, Math.max(1, num(warn, CONTEXT_WARN)));
+  const c = Math.min(100, Math.max(2, num(critical, CONTEXT_CRITICAL)));
+
+  return { warn: w, critical: c > w ? c : Math.min(100, w + 1) };
+}
+
+/**
+ * One step of the guard's alert: it fires once when the context turns
+ * critical, and arms again only once the context is back below the warning.
+ */
+export function guardStep(
+  armed: boolean,
+  level: ContextLevel,
+): { armed: boolean; alert: boolean } {
+  if (level === "critical") return { armed: false, alert: armed };
+  if (level === "ok") return { armed: true, alert: false };
+
+  return { armed, alert: false };
+}
+
 /** Appended to every compaction of the main loop so the summary keeps what the work needs. */
 export const PRESERVE_INSTRUCTIONS = [
   "Keep in full, as concrete facts, not vague prose:",
@@ -252,6 +308,10 @@ export type HandoffInput = {
   cwd: string;
   model: string;
   tokensBefore?: number;
+  /** How full the window was, 0–100, when the compaction began. */
+  contextPercent?: number;
+  /** What started it: `manual` (/handoff, the pane) or `auto`. */
+  trigger?: string;
   heroes: Hero[];
   summary: string;
   path: string;
@@ -265,20 +325,42 @@ export function handoffMarkdown(h: HandoffInput): string {
       : running
           .map(
             (x) =>
-              `- ${x.title} (${x.type}, ${shortModel(x.model)}, id ${x.id})`,
+              `- ${x.title} (${x.type}, ${shortModel(x.model)}, id ${x.id})` +
+              (x.lastAction
+                ? ` · last: ${x.lastAction}${x.lastDetail ? ` ${clip(x.lastDetail, 80)}` : ""}`
+                : ""),
           )
           .join("\n");
+  const recent = h.heroes
+    .filter((x) => x.status !== "running")
+    .sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
+    .slice(0, 5)
+    .map(
+      (x) =>
+        `- ${x.title} (${x.type}): ${x.status}` +
+        (x.endedAt !== undefined
+          ? `, ${fmtDuration(x.endedAt - x.startedAt)}`
+          : ""),
+    );
+  const context = [
+    h.tokensBefore ? fmtTokens(h.tokensBefore) : "",
+    h.contextPercent !== undefined ? `${Math.round(h.contextPercent)}%` : "",
+  ]
+    .filter(Boolean)
+    .join(", ");
   const lines = [
     `# Handoff ${new Date(h.at).toISOString()}`,
     "",
     `Session \`${h.sessionId}\` · cwd \`${h.cwd}\` · model \`${h.model}\`` +
-      (h.tokensBefore
-        ? ` · context before compaction ${fmtTokens(h.tokensBefore)}`
-        : ""),
+      (h.trigger ? ` · ${h.trigger} compaction` : "") +
+      (context ? ` · context before compaction ${context}` : ""),
     "",
     "## Agents running at the time",
     agents,
     "",
+    ...(recent.length > 0
+      ? ["## Recently finished agents", ...recent, ""]
+      : []),
     "## Summary",
     h.summary.trim() || "(the compaction returned no summary text)",
     "",
@@ -340,12 +422,17 @@ export function etaToFull(
   points: { at: number; value: number }[],
   now: number,
 ): number | undefined {
-  const recent = points.filter((p) => now - p.at <= 3_600_000);
+  const inHour = points.filter((p) => now - p.at <= 3_600_000);
+  // A drop is a window reset: only the readings after the last one count.
+  let start = 0;
+  for (let i = 1; i < inHour.length; i++)
+    if ((inHour[i]?.value ?? 0) < (inHour[i - 1]?.value ?? 0)) start = i;
+  const recent = inHour.slice(start);
   const first = recent[0];
   const last = recent[recent.length - 1];
   if (!first || !last || last.at - first.at < 5 * 60_000) return undefined;
   const slope = (last.value - first.value) / (last.at - first.at);
-  if (slope <= 0) return undefined;
+  if (slope <= 0 || last.value >= 100) return undefined;
 
   return now + (100 - last.value) / slope;
 }
@@ -486,6 +573,173 @@ export function successStreak(statuses: string[]): number {
   }
 
   return n;
+}
+
+export const EMPTY_RETIRED: Retired = {
+  total: 0,
+  done: 0,
+  failed: 0,
+  streak: 0,
+  actions: 0,
+  tokens: 0,
+};
+
+/** How many finished agents the live list keeps; older ones become counters. */
+export const KEEP_FINISHED = 60;
+
+/** How long a finished agent lingers in the squad with its outcome before it leaves. */
+export const FRESH_DONE_MS = 6000;
+
+/**
+ * Keeps every running agent and the newest `keep` finished ones, in order, and
+ * folds the rest into `retired` so totals and the success streak stay right.
+ * The oldest by `endedAt` go first, and an agent still lingering (finished less
+ * than `FRESH_DONE_MS` before `now`) is never trimmed: the agent list may still
+ * name it, and a trimmed one would come back as a new agent and count twice.
+ */
+export function trimHeroes(
+  list: Hero[],
+  retired: Retired,
+  keep = KEEP_FINISHED,
+  now = Number.POSITIVE_INFINITY,
+): { list: Hero[]; retired: Retired } {
+  const finished = list.filter((x) => x.status !== "running");
+  const over = finished.length - keep;
+  if (over <= 0) return { list, retired };
+  const gone = finished
+    .filter((x) => now - (x.endedAt ?? 0) >= FRESH_DONE_MS)
+    .sort((a, b) => (a.endedAt ?? 0) - (b.endedAt ?? 0))
+    .slice(0, over);
+  if (gone.length === 0) return { list, retired };
+  const dropped = new Set(gone.map((x) => x.id));
+
+  return {
+    list: list.filter((x) => !dropped.has(x.id)),
+    retired: addRetired(retired, {
+      total: gone.length,
+      done: gone.filter((x) => x.status === "done").length,
+      failed: gone.filter((x) => x.status === "failed").length,
+      streak: successStreak(gone.map((x) => x.status)),
+      actions: gone.reduce((n, x) => n + x.actions, 0),
+      tokens: gone.reduce((n, x) => n + (x.tokens ?? 0), 0),
+    }),
+  };
+}
+
+/** Two batches of retired agents as one, `newer` retired after `older`. */
+export function addRetired(older: Retired, newer: Retired): Retired {
+  return {
+    total: older.total + newer.total,
+    done: older.done + newer.done,
+    failed: older.failed + newer.failed,
+    streak:
+      newer.streak === newer.total
+        ? older.streak + newer.streak
+        : newer.streak,
+    actions: older.actions + newer.actions,
+    tokens: older.tokens + newer.tokens,
+  };
+}
+
+/** Successes in a row over the retired agents and then the live list's finished ones. */
+export function streakWith(finished: string[], retired: Retired): number {
+  const live = successStreak(finished);
+
+  return live === finished.length ? live + retired.streak : live;
+}
+
+/** What `$.agent.list()` reports, as far as the squad needs it. */
+export type ListedAgent = {
+  id: string;
+  status: string;
+  description?: string;
+  name?: string;
+  type: string;
+};
+
+const LIST_DONE: Record<string, Hero["status"]> = {
+  completed: "done",
+  failed: "failed",
+  killed: "stopped",
+};
+
+/**
+ * Brings the squad in line with `$.agent.list()`: adds agents the list names
+ * that the squad misses, ends those it reports finished, and stops a running
+ * agent the list named before and no longer does (its loop is gone, so no
+ * `turn.complete` will come). Agents the list never named (a workflow's remote
+ * agents) are left to their own events.
+ */
+export function reconcileHeroes(
+  known: Hero[],
+  listed: ListedAgent[],
+  now: number,
+): Hero[] {
+  const byId = new Map(listed.map((a) => [a.id, a]));
+  const have = new Set(known.map((x) => x.id));
+  const next = known.map((hero): Hero => {
+    const a = byId.get(hero.id);
+    if (!a) {
+      return hero.status === "running" && hero.listed
+        ? { ...hero, status: "stopped", endedAt: now }
+        : hero;
+    }
+    const finished = LIST_DONE[a.status];
+    if (hero.status === "running" && finished)
+      return { ...hero, status: finished, endedAt: now, listed: true };
+
+    return hero.listed ? hero : { ...hero, listed: true };
+  });
+  for (const a of listed) {
+    if (have.has(a.id) || LIST_DONE[a.status]) continue;
+    next.push({
+      id: a.id,
+      title: a.description || a.name || a.type,
+      type: a.type,
+      model: "?",
+      status: "running",
+      startedAt: now,
+      actions: 0,
+      listed: true,
+    });
+  }
+
+  return next;
+}
+
+/**
+ * A hero `agent.spawn` reports, merged with what the squad already knew of it
+ * (the list or the agent's first steps can come before the spawn resolves).
+ */
+export function mergeSpawned(old: Hero | undefined, hero: Hero): Hero {
+  if (!old) return hero;
+
+  return {
+    ...old,
+    title: hero.title,
+    type: hero.type,
+    model: old.model !== "?" ? old.model : hero.model,
+    startedAt: Math.min(old.startedAt, hero.startedAt),
+  };
+}
+
+/** The shortest gap between two chimes, so a burst of unlocks rings once. */
+export const CHIME_GAP_MS = 15_000;
+
+/**
+ * Whether a moment worth a chime may ring: sound on, not a quiet check (the
+ * one at session start, which finds what past sessions earned), and the last
+ * chime far enough back.
+ */
+export function mayChime(
+  sound: boolean,
+  isQuiet: boolean,
+  lastAt: number | undefined,
+  now: number,
+): boolean {
+  if (!sound || isQuiet) return false;
+
+  return lastAt === undefined || now - lastAt >= CHIME_GAP_MS;
 }
 
 /** The achievements `stats` reaches that `have` does not hold yet. */
