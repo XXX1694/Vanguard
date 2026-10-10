@@ -104,6 +104,8 @@ export type Usage = {
   lastSkill?: { name: string; at: number };
   /** Finished agents dropped from `heroes` to keep it bounded. */
   retired?: Retired;
+  /** Ids already folded into `retired` that may still sit in `heroes` (dropped on the next trim). */
+  trimmed?: string[];
 };
 
 export type Unlock = { id: string; at: number };

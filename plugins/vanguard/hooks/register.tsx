@@ -19,7 +19,6 @@ import type {
   Sample,
   SessionRecord,
   Snapshot,
-  Retired,
   Tab,
   Unlock,
   Usage,
@@ -46,6 +45,9 @@ import {
   ACHIEVEMENTS,
   addRetired,
   EMPTY_RETIRED,
+  FRESH_DONE_MS,
+  KEEP_FINISHED,
+  rateLeft,
   mergeSpawned,
   reconcileHeroes,
   streakWith,
@@ -85,6 +87,7 @@ import {
   modelBadge,
   pad,
   percentLeft,
+  isPastReset,
   PRESERVE_INSTRUCTIONS,
   pulseBar,
   pushSample,
@@ -135,7 +138,6 @@ const levelSeen = atom({ plugin: "vanguard", key: "levelSeen" } as const, 0);
 
 /** How long a banner stays, and a finished agent's check keeps popping. */
 const CELEBRATE_MS = 8000;
-const FRESH_DONE_MS = 6000;
 /** At most this many animated drawings at once on a remote surface: each is a frame of its own. */
 const FRAME_BUDGET = 8;
 /** At most this many model icons in the band, so it keeps to one line at 80 columns. */
@@ -347,21 +349,35 @@ async function syncAgents($: Engine): Promise<void> {
   await update($, heroes, (list: Hero[]) => reconcileHeroes(list, listed, now));
 }
 
-/** Keeps the squad bounded: old finished agents become counters in `usage.retired`. */
+/**
+ * Keeps the squad bounded: old finished agents become counters in `usage.retired`.
+ * The counters are written first, with the ids they cover, and the agents are
+ * dropped after: a stop in between is finished by the next trim, never counted twice.
+ */
 async function trimSquad($: Engine): Promise<void> {
-  let gone: Retired | undefined;
-  await update($, heroes, (list: Hero[]) => {
-    const r = trimHeroes(list, EMPTY_RETIRED);
-    if (r.list.length === list.length) return list;
-    gone = r.retired;
-    return r.list;
-  });
-  const delta = gone;
-  if (delta)
-    await bumpUsage($, (u) => ({
-      ...u,
-      retired: addRetired(u.retired ?? EMPTY_RETIRED, delta),
-    }));
+  const drop = async (ids: string[]) => {
+    const gone = new Set(ids);
+    await update($, heroes, (list: Hero[]) =>
+      list.some((x) => gone.has(x.id))
+        ? list.filter((x) => !gone.has(x.id))
+        : list,
+    );
+  };
+  const before: Usage | null = await read($, usage);
+  const pending = before?.trimmed ?? [];
+  if (pending.length > 0) await drop(pending);
+  const list: Hero[] = await read($, heroes);
+  const now = await $.clock.now();
+  const r = trimHeroes(list, EMPTY_RETIRED, KEEP_FINISHED, now);
+  if (r.list.length === list.length) return;
+  const kept = new Set(r.list.map((x) => x.id));
+  const ids = list.filter((x) => !kept.has(x.id)).map((x) => x.id);
+  await bumpUsage($, (u) => ({
+    ...u,
+    retired: addRetired(u.retired ?? EMPTY_RETIRED, r.retired),
+    trimmed: ids,
+  }));
+  await drop(ids);
 }
 
 /** Reads what the session can reach: MCP servers from the tool list, plugins and skills from the commands. */
@@ -997,7 +1013,8 @@ export const register: Register = (on, options) => {
           contextLevel(percent, settings.ctxWarn, settings.ctxCritical),
         );
         guardArmed = step.armed;
-        if (step.alert) $.ui.toast((await textsFor($)).guardToast(percent));
+        if (step.alert)
+          $.ui.toast((await textsFor($)).guardToast(Math.round(percent)));
       }
     });
 
@@ -1769,14 +1786,9 @@ export const register: Register = (on, options) => {
     const fivePoints = samples.flatMap((s) =>
       s.five === undefined ? [] : [{ at: s.at, value: s.five }],
     );
-    /** A reset already behind us: no reply since, so nothing of the new window is used. */
-    const isPastReset = (resetsAt?: string) => {
-      const at = resetsAt ? Date.parse(resetsAt) : NaN;
-      return !Number.isNaN(at) && at <= now;
-    };
     const rateNote = (kind: string, resetsAt?: string) => {
       const at = resetsAt ? Date.parse(resetsAt) : NaN;
-      if (isPastReset(resetsAt)) return T.resetPassed(fmtClock(at));
+      if (isPastReset(resetsAt, now)) return T.resetPassed(fmtClock(at));
       const reset = Number.isNaN(at)
         ? ""
         : T.resets(fmtReset(at, now, LOCALE[L]), dur(at - now));
@@ -1807,7 +1819,7 @@ export const register: Register = (on, options) => {
             r.kind,
             r.kind === "seven_day" ? "calendar" : "gauge",
             rateLabel(r.kind, T.rate),
-            isPastReset(r.resetsAt) ? 100 : percentLeft(r.percentUsed),
+            rateLeft(r, now),
             rateNote(r.kind, r.resetsAt),
           ),
         )}
@@ -2867,6 +2879,7 @@ export const register: Register = (on, options) => {
         </Text>
       );
     const five = m?.rates.find((r) => r.kind === "five_hour");
+    const now = await $.clock.now();
     const ctxColor =
       ctx === "critical" ? "error" : ctx === "warn" ? "warning" : "subtle";
 
@@ -2899,7 +2912,7 @@ export const register: Register = (on, options) => {
         ) : null}
         {five ? icon("gauge", "subtle", "f") : null}
         {five ? (
-          <Text dimColor>{T.bandFive(Math.round(percentLeft(five.percentUsed)))}</Text>
+          <Text dimColor>{T.bandFive(Math.round(rateLeft(five, now)))}</Text>
         ) : null}
         {m?.usd !== undefined ? icon("coins", "subtle", "u") : null}
         {m?.usd !== undefined ? (

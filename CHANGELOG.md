@@ -20,6 +20,9 @@ All notable changes to Vanguard are listed here. The format follows [Keep a Chan
 - Early actions of a subagent are no longer lost when the agent list reports it before its spawn resolves.
 - The squad no longer grows without bound: old finished agents become counters, and totals, streaks and the profile stay right.
 - The 5-hour forecast survives a window reset. A passed reset shows a fresh window instead of a stale reading, and a spend limit past 100% no longer shows a negative "left".
+- The band's 5-hour reading follows a passed reset like the pane does, instead of showing the stale value.
+- Trimming the squad drops the longest-finished agents first and never one still lingering, so no agent is counted twice, and a stop mid-trim no longer loses totals.
+- The context guard's toast shows a whole percent.
 - Inverted or non-numeric context thresholds are corrected instead of leaving the guard stuck on one colour.
 - Two compactions within one minute no longer overwrite each other's snapshot.
 - The observer hooks (`agent.spawn`, `tool.call`, `session.compact`) carry an explicit fail-open `.catch`, and `/vanguard` no longer fails when the pane cannot open.

@@ -31,6 +31,9 @@ import {
   guardStep,
   guardThresholds,
   percentLeft,
+  isPastReset,
+  rateLeft,
+  FRESH_DONE_MS,
   fmtClock,
   mayChime,
   CHIME_GAP_MS,
@@ -777,6 +780,33 @@ describe("squad", () => {
     expect(again.retired.total).toBe(6);
     expect(again.retired.streak).toBe(5);
   });
+
+  test("trimming drops the longest finished first and never a lingering one", () => {
+    const now = 100_000;
+    const list = [
+      hero("late", "done", { endedAt: 90_000 }),
+      hero("early", "failed", { endedAt: 10_000 }),
+      hero("fresh", "done", { endedAt: now - FRESH_DONE_MS + 1 }),
+      hero("mid", "done", { endedAt: 50_000 }),
+    ];
+    const r = trimHeroes(list, EMPTY_RETIRED, 2, now);
+    // spawn order would drop "late" first; endedAt says "early" and "mid"
+    expect(r.list.map((x) => x.id)).toEqual(["late", "fresh"]);
+    expect(r.retired.total).toBe(2);
+    expect(r.retired.failed).toBe(1);
+    expect(r.retired.streak).toBe(1);
+    // only lingering agents over the limit: nothing goes until they settle
+    const lingering = [
+      hero("a", "done", { endedAt: now - 1000 }),
+      hero("b", "done", { endedAt: now - 2000 }),
+    ];
+    const kept = trimHeroes(lingering, EMPTY_RETIRED, 0, now);
+    expect(kept.list).toBe(lingering);
+    expect(kept.retired).toBe(EMPTY_RETIRED);
+    const later = trimHeroes(lingering, EMPTY_RETIRED, 0, now + FRESH_DONE_MS);
+    expect(later.list).toEqual([]);
+    expect(later.retired.total).toBe(2);
+  });
 });
 
 test(
@@ -904,10 +934,12 @@ test(
         rateLimits: [],
         changed: ["context"],
       });
-    for (const p of [40, 86, 90, 75, 88, 50, 91]) await measure(p);
+    for (const p of [40, 86.6, 90, 75, 88, 50, 91]) await measure(p);
     const alerts = toasts.filter((t) => t.includes("/handoff"));
     expect(alerts).toHaveLength(2);
-    expect(alerts[0]).toContain("86%");
+    // the toast shows a whole percent
+    expect(alerts[0]).toContain("87%");
+    expect(alerts[0]).not.toContain("86.6");
 
     const band = await $.ui.mount({
       plugin: "vanguard",
@@ -950,6 +982,20 @@ describe("limits", () => {
     expect(percentLeft(-3)).toBe(100);
     expect(percentLeft(Number.NaN)).toBe(100);
   });
+
+  test("a rate window past its reset reads as untouched", () => {
+    const now = Date.UTC(2026, 9, 9, 12, 0);
+    const past = new Date(now - 60_000).toISOString();
+    const ahead = new Date(now + 60_000).toISOString();
+    expect(isPastReset(past, now)).toBe(true);
+    expect(isPastReset(new Date(now).toISOString(), now)).toBe(true);
+    expect(isPastReset(ahead, now)).toBe(false);
+    expect(isPastReset(undefined, now)).toBe(false);
+    expect(isPastReset("soon", now)).toBe(false);
+    expect(rateLeft({ percentUsed: 97, resetsAt: past }, now)).toBe(100);
+    expect(rateLeft({ percentUsed: 97, resetsAt: ahead }, now)).toBe(3);
+    expect(rateLeft({ percentUsed: 120 }, now)).toBe(0);
+  });
 });
 
 test(
@@ -959,6 +1005,10 @@ test(
     const now = Date.UTC(2026, 9, 9, 12, 0);
     mock.clock(on, { now });
     on("session.measure", (_$, e) => ({ changed: e.changed }));
+    on("agent.spawn", () => ({
+      model: "claude-haiku-5-5",
+      agentId: "agent-1",
+    }));
     const resetAt = Date.UTC(2026, 9, 9, 11, 0);
     await ($ as any).session.measure({
       context: { window: 200_000, tokens: 20_000, percent: 10 },
@@ -988,6 +1038,17 @@ test(
     expect(texts.some((t: string) => t.trim() === "3%")).toBe(false);
     expect(texts.some((t: string) => /^-\d+%/.test(t.trim()))).toBe(false);
     expect(texts.some((t: string) => t.trim() === "0%")).toBe(true);
+
+    // the band agrees with the pane: a fresh window, not the stale 3%
+    await $.agent.spawn({ prompt: "p", description: "Recon" } as never);
+    const band = await $.ui.mount({
+      plugin: "vanguard",
+      surface: "terminal",
+      component: "AbovePrompt",
+      props: { hasSurvey: false } as never,
+    });
+    expect(await band.find({ type: "Text", text: "5h 100%" })).toBeDefined();
+    expect(await band.find({ type: "Text", text: "5h 3%" })).toBeUndefined();
   },
 );
 

@@ -81,6 +81,24 @@ export function percentLeft(percentUsed: number): number {
   return Math.max(0, Math.min(100, 100 - percentUsed));
 }
 
+/** A rate window whose reset is already behind us: no reply since, so nothing of the new one is used. */
+export function isPastReset(
+  resetsAt: string | undefined,
+  now: number,
+): boolean {
+  const at = resetsAt ? Date.parse(resetsAt) : NaN;
+
+  return !Number.isNaN(at) && at <= now;
+}
+
+/** What is left of a rate window, 0–100, reading a passed reset as a fresh window. */
+export function rateLeft(
+  rate: { percentUsed: number; resetsAt?: string },
+  now: number,
+): number {
+  return isPastReset(rate.resetsAt, now) ? 100 : percentLeft(rate.percentUsed);
+}
+
 /** Colour for a "how much is left" meter. */
 export function meterColor(percentLeft: number): string {
   if (percentLeft < 20) return "error";
@@ -569,19 +587,30 @@ export const EMPTY_RETIRED: Retired = {
 /** How many finished agents the live list keeps; older ones become counters. */
 export const KEEP_FINISHED = 60;
 
+/** How long a finished agent lingers in the squad with its outcome before it leaves. */
+export const FRESH_DONE_MS = 6000;
+
 /**
  * Keeps every running agent and the newest `keep` finished ones, in order, and
  * folds the rest into `retired` so totals and the success streak stay right.
+ * The oldest by `endedAt` go first, and an agent still lingering (finished less
+ * than `FRESH_DONE_MS` before `now`) is never trimmed: the agent list may still
+ * name it, and a trimmed one would come back as a new agent and count twice.
  */
 export function trimHeroes(
   list: Hero[],
   retired: Retired,
   keep = KEEP_FINISHED,
+  now = Number.POSITIVE_INFINITY,
 ): { list: Hero[]; retired: Retired } {
   const finished = list.filter((x) => x.status !== "running");
   const over = finished.length - keep;
   if (over <= 0) return { list, retired };
-  const gone = finished.slice(0, over);
+  const gone = finished
+    .filter((x) => now - (x.endedAt ?? 0) >= FRESH_DONE_MS)
+    .sort((a, b) => (a.endedAt ?? 0) - (b.endedAt ?? 0))
+    .slice(0, over);
+  if (gone.length === 0) return { list, retired };
   const dropped = new Set(gone.map((x) => x.id));
 
   return {
