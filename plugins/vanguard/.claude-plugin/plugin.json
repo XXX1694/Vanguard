@@ -1,6 +1,6 @@
 {
   "name": "vanguard",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Command center for Claude Code: a live pane for your squad of subagents, limits and context, an orchestrator that fans work out to specialist agents, bundled MCP servers and skills, and a lifetime profile with levels and achievements.",
   "author": {
     "name": "Abzal Serikbay"

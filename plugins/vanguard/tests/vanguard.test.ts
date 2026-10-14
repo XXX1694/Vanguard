@@ -146,7 +146,7 @@ for (const surface of ["terminal", "desktop"] as const) {
         requestId: "vanguard",
       });
       expect(
-        await pane.find({ type: "Button", text: "Recon the repo" }),
+        await pane.find({ type: "Button", text: "Recon the repo ›" }),
       ).toBeDefined();
       expect(await pane.find({ type: "Text", text: "Отряд" })).toBeDefined();
       expect(

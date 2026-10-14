@@ -223,10 +223,6 @@ export function clip(text: string, max: number): string {
   return text.length > max ? text.slice(0, max - 1) + "…" : text;
 }
 
-export function pad(text: string, width: number): string {
-  return text.length >= width ? text : text + " ".repeat(width - text.length);
-}
-
 export function rateLabel(
   kind: string,
   labels: Record<string, string> = {},

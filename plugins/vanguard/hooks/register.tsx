@@ -65,7 +65,6 @@ import {
   successStreak,
   meterColor,
   modelBadge,
-  pad,
   plainText,
   PRESERVE_INSTRUCTIONS,
   pushSample,
@@ -1415,7 +1414,7 @@ export const register: Register = (on, options) => {
       <Button
         key={`open-${id}`}
         plain
-        label={clip(title, Math.max(8, max))}
+        label={`${clip(title, Math.max(8, max - 2))} ›`}
         onPress={() => openAgent(id)}
       />
     );
@@ -1785,10 +1784,10 @@ export const register: Register = (on, options) => {
     // Limits and the finished list share a row on a wide pane, when both show.
     const isPaired = isWide && offStage.length > 0;
     const limitsRoom = isPaired ? half : inner;
-    const labelCells = isNarrow ? 8 : 10;
-    const barCells = Math.max(4, Math.min(16, limitsRoom - labelCells - 10));
+    const labelCells = 12;
+    const barCells = Math.max(4, Math.min(16, limitsRoom - labelCells - 12));
     // The note fits beside the bar on a wide row, under it otherwise.
-    const noteBeside = limitsRoom - labelCells - barCells - 8 >= 24;
+    const noteBeside = limitsRoom - labelCells - barCells - 10 >= 28;
     const meter = (
       key: string,
       name: IconName,
@@ -1800,17 +1799,30 @@ export const register: Register = (on, options) => {
 
       return (
         <Box key={key} flexDirection="column" minWidth={0}>
-          <Box flexDirection="row" alignItems="center" columnGap={1}>
+          <Box
+            flexDirection="row"
+            alignItems="center"
+            columnGap={1}
+            minWidth={0}
+          >
             {icon(name, color, 13, "i")}
-            <Text key="l">{pad(label, labelCells)}</Text>
-            {progress(percentLeft, color, barCells, "b")}
-            <Text key="p" bold>
-              {pad(`${Math.round(percentLeft)}%`, 4)}
-            </Text>
+            {/* Fixed columns, not padding: the desktop draws text in a
+                proportional face, so only boxes line the bars up. */}
+            <Box key="l" width={labelCells} flexShrink={0}>
+              <Text wrap="truncate-end">{label}</Text>
+            </Box>
+            <Box key="b" flexShrink={0}>
+              {progress(percentLeft, color, barCells)}
+            </Box>
+            <Box key="p" width={5} flexShrink={0} justifyContent="flex-end">
+              <Text bold>{`${Math.round(percentLeft)}%`}</Text>
+            </Box>
             {noteBeside && note ? (
-              <Text key="n" dimColor wrap="truncate-end">
-                {note}
-              </Text>
+              <Box key="n" flexShrink={1} minWidth={0}>
+                <Text dimColor wrap="truncate-end">
+                  {note}
+                </Text>
+              </Box>
             ) : null}
           </Box>
           {!noteBeside && note ? (

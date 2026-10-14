@@ -2,6 +2,14 @@
 
 All notable changes to Vanguard are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [1.2.2] - 2026-10-14
+
+### Fixed
+- Limits line up on the desktop: labels, bars and percentages sit in fixed columns instead of space padding, which a proportional face ignores, so a label no longer wraps onto two lines. A note that does not fit beside its bar goes under it.
+
+### Changed
+- An agent's name ends with `›`, so it reads as the button that opens the agent's page.
+
 ## [1.2.1] - 2026-10-14
 
 ### Fixed
@@ -45,6 +53,7 @@ All notable changes to Vanguard are listed here. The format follows [Keep a Chan
 - Lifetime profile with levels, XP and eleven achievements, shared across sessions and projects.
 - Settings for the orchestrator, opening at start, animations, sound, context thresholds and visible tabs.
 
+[1.2.2]: https://github.com/XXX1694/Vanguard/releases/tag/v1.2.2
 [1.2.1]: https://github.com/XXX1694/Vanguard/releases/tag/v1.2.1
 [1.2.0]: https://github.com/XXX1694/Vanguard/releases/tag/v1.2.0
 [1.1.0]: https://github.com/XXX1694/Vanguard/releases/tag/v1.1.0
