@@ -26,18 +26,10 @@ import type {
 import {
   barSvg,
   burstSvg,
-  equalizerSvg,
   GLYPHS,
   iconSvg,
-  loaderSvg,
-  LOGO_IDLE_SVG,
-  LOGO_LIVE_SVG,
   LOGO_SVG,
-  popCheckSvg,
-  pulseSvg,
-  shineBarSvg,
   stackedSvg,
-  sparkSvg,
   toolIcon,
   type IconName,
 } from "./icons";
@@ -45,13 +37,13 @@ import {
   ACHIEVEMENTS,
   type VanguardStats,
   bar,
-  burnPerHour,
   clip,
   contextLevel,
   effortDots,
   effortLabel,
   etaToFull,
   fmtClock,
+  fmtAge,
   fmtDuration,
   fmtReset,
   fmtTokens,
@@ -74,13 +66,11 @@ import {
   meterColor,
   modelBadge,
   pad,
+  plainText,
   PRESERVE_INSTRUCTIONS,
-  pulseBar,
   pushSample,
   rateLabel,
   shortModel,
-  sparkline,
-  spinnerFrame,
   toolDetail,
   toolLabel,
   topTools,
@@ -94,6 +84,15 @@ import {
   type Dict,
   type Lang,
 } from "./i18n";
+import {
+  activityOf,
+  characterSvg,
+  ROLE_COLOR,
+  roleOf,
+  type Activity,
+  type Mood,
+  type Role,
+} from "./characters";
 
 type Engine = EngineInterface;
 
@@ -121,12 +120,32 @@ const celebration = atom(
 );
 const langPick = atom({ plugin: "vanguard", key: "lang" } as const, null);
 const levelSeen = atom({ plugin: "vanguard", key: "levelSeen" } as const, 0);
+/** The agent whose page the pane shows instead of a tab: its id, or MAIN. */
+const focus = atom({ plugin: "vanguard", key: "focus" } as const, null);
+const MAIN = "main";
 
-/** How long a banner stays, and a finished agent's check keeps popping. */
+/** How long a banner stays, and an unlock is marked new. */
 const CELEBRATE_MS = 8000;
-const FRESH_DONE_MS = 6000;
-/** At most this many animated drawings at once on a remote surface: each is a frame of its own. */
-const FRAME_BUDGET = 8;
+const FRESH_UNLOCK_MS = 10_000;
+/** How long a finished agent stays on the stage to take its bow. */
+const BOW_MS = 15_000;
+/** At most this many portraits move at once: each animated one is a frame of its own. */
+const PORTRAIT_BUDGET = 13;
+/**
+ * A cell's width in CSS pixels, on the narrow side of the desktop's code
+ * font, so a drawing sized in cells never overflows its slot.
+ */
+const CELL_PX = 7;
+/** A portrait on a card, and the cells set aside for it. */
+const PORTRAIT_PX = 52;
+const PORTRAIT_CELLS = 8;
+/** The portrait on an agent's page. */
+const DETAIL_PX = 88;
+const DETAIL_CELLS = 13;
+/** What an agent's page keeps: its last steps, its brief and its report, clipped. */
+const TRAIL_MAX = 30;
+const BRIEF_MAX = 1200;
+const REPORT_MAX = 3000;
 
 /** The mod's settings, from the manifest's userConfig (the config menu). */
 type Settings = {
@@ -240,6 +259,18 @@ const STATUS_VIEW: Record<HeroStatus, { icon: IconName; color: string }> = {
   done: { icon: "check", color: "success" },
   failed: { icon: "x", color: "error" },
   stopped: { icon: "stop", color: "inactive" },
+};
+
+/** The terminal draws no portraits: a glyph in the role's colour stands in. */
+const ROLE_GLYPH: Record<Role, string> = {
+  commander: "♛",
+  scout: "◎",
+  architect: "△",
+  builder: "⚒",
+  reviewer: "◉",
+  verifier: "✔",
+  guide: "✎",
+  soldier: "⚔",
 };
 
 /** The language the system names (LC_ALL, LC_MESSAGES, LANG), read at session start. */
@@ -706,6 +737,7 @@ async function startUp($: Engine): Promise<void> {
   await quietly(() => refreshArsenal($));
   await quietly(() => checkAchievements($));
   let ticks = 0;
+  let drawn = "";
   $.clock.every(1000, () => {
     ticks += 1;
     void quietly(async () => {
@@ -713,16 +745,34 @@ async function startUp($: Engine): Promise<void> {
       if (ticks % 30 === 0) await refreshBreakdown($);
       if (ticks % 60 === 0) await refreshArsenal($);
       if (ticks % 15 === 0) await saveSession($);
+      // State changes redraw their readers by themselves. The clock alone
+      // redraws only when something the clock drives would show differently:
+      // a running time turning a minute, a bow ending, a banner going away.
+      // Portraits animate in their own frames and need no redraw at all.
       const list: Hero[] = await read($, heroes);
       const party: Celebration | null = await read($, celebration);
+      const m: Meters | null = await read($, meters);
+      const boss: Commander | null = await read($, commander);
+      const got: Unlock[] = (await read($, unlocked)) ?? [];
       const now = await $.clock.now();
-      const isLively =
-        list.some(
-          (x) =>
-            x.status === "running" || (x.endedAt ?? 0) > now - FRESH_DONE_MS,
-        ) ||
-        (party !== null && now - party.at < CELEBRATE_MS);
-      if (isLively || ticks % 30 === 0) $.ui.invalidate("ui.render");
+      const minute = (since: number) => Math.floor((now - since) / 60_000);
+      const shown = [
+        minute(m?.sessionStartedAt ?? boss?.startedAt ?? now),
+        ...(m?.rates ?? []).map((r) =>
+          r.resetsAt ? minute(Date.parse(r.resetsAt)) : 0,
+        ),
+        ...got.map((x) => now - x.at < FRESH_UNLOCK_MS),
+        ...list.map((x) =>
+          x.status === "running"
+            ? minute(x.startedAt)
+            : now - (x.endedAt ?? 0) < BOW_MS,
+        ),
+        party !== null && now - party.at < CELEBRATE_MS,
+      ].join();
+      if (shown !== drawn || ticks % 30 === 0) {
+        drawn = shown;
+        $.ui.invalidate("ui.render");
+      }
     });
   });
   if (settings.autoOpen)
@@ -773,11 +823,15 @@ export const register: Register = (on, options) => {
         const hero: Hero = {
           id: started.agentId,
           title: e.description || e.subagentType,
-          type: e.subagentType,
+          type: e.subagentType || "general-purpose",
           model: started.model,
           status: "running",
           startedAt: now,
           actions: 0,
+          brief:
+            typeof e.prompt === "string"
+              ? clip(plainText(e.prompt), BRIEF_MAX)
+              : "",
         };
         await update($, heroes, (list: Hero[]) => [
           ...list.filter((x) => x.id !== hero.id),
@@ -809,7 +863,9 @@ export const register: Register = (on, options) => {
         }));
       } else {
         await update($, commander, (c: Commander | null) =>
-          c ? { ...c, model: e.model, effort, steps: c.steps + 1 } : c,
+          c
+            ? { ...c, model: e.model, effort, steps: c.steps + 1, busy: true }
+            : c,
         );
       }
     });
@@ -853,6 +909,13 @@ export const register: Register = (on, options) => {
           actions: x.actions + 1,
           lastAction: e.tool,
           lastDetail: detail,
+          toolCounts: {
+            ...(x.toolCounts ?? {}),
+            [e.tool]: ((x.toolCounts ?? {})[e.tool] ?? 0) + 1,
+          },
+          trail: [...(x.trail ?? []), { at, tool: e.tool, detail }].slice(
+            -TRAIL_MAX,
+          ),
         }));
       } else {
         await update($, commander, (c: Commander | null) =>
@@ -866,6 +929,9 @@ export const register: Register = (on, options) => {
                   ...(c.toolCounts ?? {}),
                   [e.tool]: ((c.toolCounts ?? {})[e.tool] ?? 0) + 1,
                 },
+                trail: [...(c.trail ?? []), { at, tool: e.tool, detail }].slice(
+                  -TRAIL_MAX,
+                ),
               }
             : c,
         );
@@ -900,6 +966,7 @@ export const register: Register = (on, options) => {
           status,
           endedAt: now,
           tokens: (x.tokens ?? 0) + tokens,
+          report: e.answer ? clip(plainText(e.answer), REPORT_MAX) : x.report,
         }));
         if (hero) {
           const view = STATUS_VIEW[status];
@@ -914,6 +981,17 @@ export const register: Register = (on, options) => {
           );
         }
         await checkAchievements($);
+      } else {
+        await update($, commander, (c: Commander | null) =>
+          c
+            ? {
+                ...c,
+                busy: false,
+                lastAction: undefined,
+                lastDetail: undefined,
+              }
+            : c,
+        );
       }
     });
 
@@ -1020,12 +1098,12 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button } = els;
     // The terminal table carries Svg too, and draws nothing for it: glyphs there.
     const Svg = e.surface !== "terminal" && "Svg" in els ? els.Svg : undefined;
+    const Markdown = "Markdown" in els ? els.Markdown : undefined;
     const width = Math.max(24, e.props.bodyColumns ?? 80);
-    // Breakpoints: compact keeps one column and rows instead of cards; medium
-    // pairs sections; wide lays the overview out in three columns.
-    const layout: "compact" | "medium" | "wide" =
-      width < 76 ? "compact" : width < 132 ? "medium" : "wide";
-    const isCompact = layout === "compact";
+    // Two breakpoints: narrow stacks everything in one column, wide sets
+    // sections side by side. The squad grid finds its own column count.
+    const isNarrow = width < 64;
+    const isWide = width >= 110;
     const now = await $.clock.now();
     const list: Hero[] = await read($, heroes);
     const m: Meters | null = await read($, meters);
@@ -1036,16 +1114,21 @@ export const register: Register = (on, options) => {
     const arms: Arsenal | null = await read($, arsenal);
     const used: Usage = { ...EMPTY_USAGE, ...((await read($, usage)) ?? {}) };
     const have: Unlock[] = (await read($, unlocked)) ?? [];
+    const focusId: string | null = await read($, focus);
 
-    const running = list.filter((x) => x.status === "running");
+    const running = list
+      .filter((x) => x.status === "running")
+      .sort((a, b) => a.startedAt - b.startedAt);
     const finished = list.filter((x) => x.status !== "running");
+    // A finished agent stays on the stage for a moment to take its bow.
+    const bowing = finished.filter((x) => now - (x.endedAt ?? 0) < BOW_MS);
+    const offStage = finished.filter((x) => now - (x.endedAt ?? 0) >= BOW_MS);
     const won = list.filter((x) => x.status === "done").length;
     const lost = list.filter((x) => x.status === "failed").length;
     const agentCalls = list.reduce((s, x) => s + x.actions, 0);
     const actions = agentCalls + (boss?.actions ?? 0);
     const agentTokens = list.reduce((s, x) => s + (x.tokens ?? 0), 0);
     const life: Lifetime | null = await read($, lifetime);
-    const folded: Record<string, boolean> = (await read($, collapsed)) ?? {};
     const sessionRec = recordOf(list, used, m?.usd, now);
     const lifeRec = mergeRecords(life?.others ?? emptyRecord(), sessionRec);
     const sessionXp = xpOf(sessionRec);
@@ -1053,7 +1136,10 @@ export const register: Register = (on, options) => {
     const anim = settings.animations;
     const L: Lang = langOf(await read($, langPick));
     const T = dict(L);
+    /** A finished length, to the second. */
     const dur = (ms: number) => fmtDuration(ms, T.units);
+    /** A running length, to the minute, so the pane redraws once a minute for it. */
+    const age = (ms: number) => fmtAge(ms, T.units);
     /** A journal line in this drawing's language. */
     const logText = (l: LogLine): string => {
       if (!l.msg) return l.text;
@@ -1093,7 +1179,7 @@ export const register: Register = (on, options) => {
         ? [
             {
               id: "achievements" as const,
-              label: isCompact ? T.tabAchievementsShort : T.tabAchievements,
+              label: isNarrow ? T.tabAchievementsShort : T.tabAchievements,
             },
           ]
         : []),
@@ -1111,39 +1197,21 @@ export const register: Register = (on, options) => {
     const ctx = contextLevel(ctxUsed, settings.ctxWarn, settings.ctxCritical);
     const sessionStart = m?.sessionStartedAt ?? boss?.startedAt ?? now;
     const sessionMs = now - sessionStart;
-    const burn = burnPerHour(m?.usd, sessionMs);
-    const perMinute =
-      sessionMs >= 60_000 ? actions / (sessionMs / 60_000) : undefined;
 
-    // One spacing scale for the whole pane, in cells: inset inside a frame,
-    // gap between neighbours, stack between rows of blocks.
+    // One spacing scale. A cell is about twice as tall as it is wide, so a
+    // side inset of two cells reads as even with one row above and below.
     const space = {
-      padX: isCompact ? 1 : 2,
-      padY: isCompact ? 0 : 1,
-      gap: isCompact ? 1 : 2,
-      stack: 1,
-      inner: isCompact ? 0 : 1,
-      outerX: 1,
+      outerX: isNarrow ? 1 : 2,
+      outerY: isNarrow ? 0 : 1,
+      gapX: 2,
+      gapY: 1,
+      cardX: 1,
     };
-    const gutter = space.gap;
     const inner = width - space.outerX * 2;
-    const colCount = layout === "wide" ? 3 : layout === "medium" ? 2 : 1;
-    const colWidth = Math.floor((inner - gutter * (colCount - 1)) / colCount);
-    const pairWidth = isCompact ? inner : Math.floor((inner - gutter) / 2);
-    const frame = 2 + space.padX * 2;
-    const barWidth = Math.max(8, Math.min(22, colWidth - frame - 24));
-    const cardsRoom = inner - frame;
-    const cardsPerRow = Math.max(
-      1,
-      Math.floor((cardsRoom + gutter) / (38 + gutter)),
-    );
-    const cardWidth = Math.max(
-      34,
-      Math.min(
-        48,
-        Math.floor((cardsRoom - gutter * (cardsPerRow - 1)) / cardsPerRow),
-      ),
-    );
+    /** Cells left for text in a column of `cols` equal columns. */
+    const colRoom = (cols: number) =>
+      Math.floor((inner - space.gapX * (cols - 1)) / cols);
+    const half = isNarrow ? inner : colRoom(2);
 
     /** An icon: a Lucide SVG where the surface draws one, a glyph on the terminal. */
     const icon = (
@@ -1171,7 +1239,7 @@ export const register: Register = (on, options) => {
       );
     };
 
-    /** A progress bar: a solid rounded SVG where drawn, block characters on the terminal. */
+    /** A progress bar `cells` wide: a rounded SVG where drawn, block characters on the terminal. */
     const progress = (
       percent: number,
       color: string,
@@ -1183,7 +1251,7 @@ export const register: Register = (on, options) => {
           key={key}
           source={barSvg(percent, color)}
           alt={`${Math.round(percent)}%`}
-          width={cells * 9}
+          width={cells * CELL_PX}
           height={8}
         />
       ) : (
@@ -1192,60 +1260,69 @@ export const register: Register = (on, options) => {
         </Text>
       );
 
-    let framesLeft = FRAME_BUDGET;
-    const takeFrame = () => framesLeft-- > 0;
+    // Portraits need room: below it a glyph in the role's colour stands in.
+    const showArt = Svg !== undefined && inner >= 36;
+    let portraitsLeft = PORTRAIT_BUDGET;
+    /**
+     * A squad member's portrait: an animated character where the surface draws
+     * one (the first few on the stage), its role's glyph on the terminal. The
+     * markup depends on what the agent does, never on the clock, so a redraw
+     * keeps its frame and the motion does not restart.
+     */
+    const portrait = (
+      key: string,
+      role: Role,
+      activity: Activity,
+      mood: Mood,
+      seed: string,
+      px: number,
+    ): RenderNode => {
+      if (!Svg || !showArt)
+        return (
+          <Text key={key} bold color={ROLE_COLOR[role]}>
+            {ROLE_GLYPH[role]}
+          </Text>
+        );
+      const isLive = anim && portraitsLeft-- > 0;
 
-    /** A moving mark: an SMIL SVG on remote surfaces, a spinner glyph on the terminal. */
-    const live = (
-      kind: "loader" | "pulse" | "eq",
-      color: string,
-      size = 14,
-      key?: string,
-    ): RenderNode =>
-      !anim || (Svg && !takeFrame()) ? (
-        icon(
-          kind === "loader"
-            ? "activity"
-            : kind === "pulse"
-              ? "zap"
-              : "activity",
-          color,
-          size,
-          key,
-        )
-      ) : Svg ? (
+      return (
         <Svg
           key={key}
-          source={
-            kind === "loader"
-              ? loaderSvg(color)
-              : kind === "pulse"
-                ? pulseSvg(color)
-                : equalizerSvg(color)
-          }
-          alt={kind === "loader" ? T.working : T.active}
-          width={size}
-          height={size}
-          isInteractive
+          source={characterSvg({
+            role,
+            activity,
+            mood,
+            seed,
+            animated: isLive,
+          })}
+          alt={T.roles[role] ?? role}
+          width={px}
+          height={px}
+          isInteractive={isLive ? true : undefined}
         />
-      ) : (
-        <Text key={key} color={color}>
-          {kind === "pulse"
-            ? Math.floor(now / 1000) % 2
-              ? "●"
-              : "○"
-            : spinnerFrame(now)}
-        </Text>
       );
+    };
 
-    /** An icon followed by text, on one line. */
-    const line = (key: string, lead: RenderNode, body: RenderChildren) => (
-      <Box key={key} flexDirection="row" alignItems="center" columnGap={1}>
+    /** An icon followed by text, on one line that truncates rather than wraps. */
+    const line = (
+      key: string,
+      lead: RenderNode | null,
+      body: RenderChildren,
+    ) => (
+      <Box
+        key={key}
+        flexDirection="row"
+        alignItems="center"
+        columnGap={1}
+        minWidth={0}
+        flexShrink={1}
+      >
         {lead}
         {body}
       </Box>
     );
 
+    /** A titled block: no frame, the heading carries it; `col` shares a row equally. */
     const section = (
       key: string,
       name: IconName,
@@ -1254,781 +1331,59 @@ export const register: Register = (on, options) => {
       body: RenderChildren,
       w: "col" | "100%" = "100%",
       aside?: RenderChildren,
-    ) => {
-      const isFolded = folded[key] === true;
-
-      return (
-        <Box
-          key={key}
-          flexDirection="column"
-          borderStyle="round"
-          borderColor="inactive"
-          hover={{ borderColor: color }}
-          paddingX={space.padX}
-          paddingY={isFolded ? 0 : space.padY}
-          rowGap={space.inner}
-          width={w === "col" ? 0 : "100%"}
-          minWidth={0}
-          flexGrow={1}
-          flexShrink={1}
-          alignSelf={isFolded ? "flex-start" : "auto"}
-        >
-          <Box justifyContent="space-between" alignItems="center" columnGap={2}>
-            {line(
-              `${key}-title`,
-              icon(name, color),
-              <Text bold color={color}>
-                {title}
-              </Text>,
-            )}
-            <Box flexDirection="row" alignItems="center" columnGap={2}>
-              {aside ?? null}
-              <Button
-                key={`fold-${key}`}
-                label={isFolded ? "▸" : "▾"}
-                plain
-                dimColor
-                onPress={async () => {
-                  const next = { ...folded, [key]: !isFolded };
-                  await update($, collapsed, () => next);
-                  await writeProfile($, (p) => ({ ...p, collapsed: next }));
-                }}
-              />
-            </Box>
-          </Box>
-          {isFolded ? null : <Box flexDirection="column">{body}</Box>}
-        </Box>
-      );
-    };
-
-    const meter = (
-      key: string,
-      name: IconName,
-      label: string,
-      percentLeft: number,
-      note: string,
-      series?: number[],
-    ) => (
-      <Box key={key} flexDirection="column">
-        {isCompact ? (
-          <Box flexDirection="column">
-            <Box flexDirection="row" justifyContent="space-between">
-              {line(
-                "l",
-                icon(name, meterColor(percentLeft)),
-                <Text>{label}</Text>,
-              )}
-              <Text bold>{Math.round(percentLeft)}%</Text>
-            </Box>
-            {progress(
-              percentLeft,
-              meterColor(percentLeft),
-              Math.max(8, inner - frame - 1),
-            )}
-          </Box>
-        ) : (
-          <Box flexDirection="row" alignItems="center" columnGap={1}>
-            {icon(name, meterColor(percentLeft))}
-            <Text>{pad(label, 9)}</Text>
-            {progress(percentLeft, meterColor(percentLeft), barWidth)}
-            <Text bold>{pad(`${Math.round(percentLeft)}%`, 4)}</Text>
-          </Box>
-        )}
-        {note ? (
-          <Box paddingLeft={isCompact ? 2 : 3}>
-            <Text dimColor wrap="truncate-end">
-              {note}
-            </Text>
-          </Box>
-        ) : null}
-        {series && series.length > 2 ? (
-          <Box
-            flexDirection="row"
-            alignItems="center"
-            columnGap={1}
-            paddingTop={1}
-          >
-            {icon("activity", "inactive", 14)}
-            <Text dimColor>{pad(T.history, 9)}</Text>
-            {Svg ? (
-              <Svg
-                source={sparkSvg(series.slice(-60), meterColor(percentLeft))}
-                alt={T.historyAlt}
-                width={barWidth * 9}
-                height={16}
-              />
-            ) : (
-              <Text color="subtle">{sparkline(series, barWidth)}</Text>
-            )}
-          </Box>
-        ) : null}
-      </Box>
-    );
-
-    const action = (
-      key: string,
-      tool?: string,
-      detail?: string,
-      w = colWidth,
-    ) =>
-      tool
-        ? line(
-            key,
-            icon(toolIcon(tool), "claude"),
-            <Text wrap="truncate-end">
-              <Text bold>{toolLabel(tool, mcpNames)}</Text>
-              {detail ? (
-                <Text dimColor>
-                  {" "}
-                  · {clip(detail, Math.max(12, w - frame - 16))}
-                </Text>
-              ) : null}
-            </Text>,
-          )
-        : line(
-            key,
-            live("pulse", "inactive", 12),
-            <Text dimColor>{T.thinking}</Text>,
-          );
-
-    // ── KPI tiles ────────────────────────────────────────────────────────
-    const tile = (
-      key: string,
-      name: IconName,
-      color: string,
-      label: string,
-      value: string,
-      sub?: string,
     ) => (
       <Box
         key={key}
         flexDirection="column"
-        borderStyle="round"
-        borderColor="inactive"
-        hover={{ borderColor: color }}
-        paddingX={space.padX}
-        paddingY={isCompact ? 0 : 1}
+        width={w === "col" ? 0 : "100%"}
+        minWidth={0}
         flexGrow={1}
-        width="100%"
+        flexShrink={1}
       >
-        {line("l", icon(name, color, 13), <Text dimColor>{label}</Text>)}
-        <Text bold color={color}>
-          {value}
-        </Text>
-        <Text dimColor wrap="truncate-end">
-          {sub ?? " "}
-        </Text>
+        <Box
+          flexDirection="row"
+          justifyContent="space-between"
+          alignItems="center"
+          columnGap={space.gapX}
+        >
+          {line(`${key}-title`, icon(name, color), <Text bold>{title}</Text>)}
+          {aside ? <Box flexShrink={0}>{aside}</Box> : null}
+        </Box>
+        <Box flexDirection="column" minWidth={0}>
+          {body}
+        </Box>
       </Box>
     );
-    const tileList: RenderNode[] = [
-      tile(
-        "t-time",
-        "clock",
-        "claude",
-        T.tileSession,
-        dur(sessionMs),
-        T.since(fmtClock(sessionStart)),
-      ),
-      tile(
-        "t-agents",
-        "users",
-        "warning",
-        T.tileAgents,
-        `${running.length} / ${list.length}`,
-        T.doneFailed(won, lost),
-      ),
-      tile(
-        "t-calls",
-        "wrench",
-        "suggestion",
-        T.tileCalls,
-        String(actions),
-        perMinute !== undefined ? T.perMinute(perMinute.toFixed(1)) : "—",
-      ),
-      tile(
-        "t-tokens",
-        "layers",
-        "merged",
-        T.tileTokens,
-        agentTokens ? fmtTokens(agentTokens) : "—",
-        list.length
-          ? T.average(
-              fmtTokens(
-                Math.round(agentTokens / Math.max(1, finished.length || 1)),
-              ),
-            )
-          : " ",
-      ),
-      tile(
-        "t-usd",
-        "coins",
-        "success",
-        T.tileSpend,
-        m?.usd !== undefined ? `$${m.usd.toFixed(2)}` : "—",
-        burn !== undefined ? T.perHour(burn.toFixed(2)) : " ",
-      ),
-    ];
-    // One line of five equal tiles; pairs only in the compact layout.
-    const perRow = isCompact ? 2 : 5;
-    const tileRows: RenderNode[][] = [];
-    for (let i = 0; i < tileList.length; i += perRow)
-      tileRows.push(tileList.slice(i, i + perRow));
-    const figure = (
-      key: string,
-      name: IconName,
-      color: string,
-      label: string,
-      value: string,
-      sub: string,
-    ) => (
+
+    /** Sections side by side; stacked when narrow. */
+    const row = (key: string, children: RenderNode[]) => (
       <Box
         key={key}
-        flexDirection="row"
-        justifyContent="space-between"
-        columnGap={1}
+        flexDirection={isNarrow ? "column" : "row"}
+        columnGap={space.gapX}
+        rowGap={space.gapY}
       >
-        {line("l", icon(name, color, 12), <Text dimColor>{label}</Text>)}
-        <Text wrap="truncate-start">
-          <Text bold color={color}>
-            {value}
-          </Text>
-          {sub.trim() && sub !== "—" ? <Text dimColor> {sub}</Text> : null}
-        </Text>
+        {children}
       </Box>
     );
-    const compactTiles = (
-      <Box
-        key="tiles"
-        flexDirection="column"
-        borderStyle="round"
-        borderColor="inactive"
-        paddingX={space.padX}
-      >
-        {figure("f-time", "clock", "claude", T.tileSession, dur(sessionMs), "")}
-        {figure(
-          "f-agents",
-          "users",
-          "warning",
-          T.figAgents,
-          `${running.length}/${list.length}`,
-          lost ? `${lost} ✗` : "",
-        )}
-        {figure(
-          "f-calls",
-          "wrench",
-          "suggestion",
-          T.tileCalls,
-          String(actions),
-          perMinute !== undefined ? T.perMinuteShort(perMinute.toFixed(1)) : "",
-        )}
-        {agentTokens
-          ? figure(
-              "f-tokens",
-              "layers",
-              "merged",
-              T.figTokens,
-              fmtTokens(agentTokens),
-              "",
-            )
-          : null}
-        {figure(
-          "f-usd",
-          "coins",
-          "success",
-          T.tileSpend,
-          m?.usd !== undefined ? `$${m.usd.toFixed(2)}` : "—",
-          burn !== undefined ? T.perHourShort(burn.toFixed(1)) : "",
-        )}
-      </Box>
-    );
-    const tiles = isCompact ? (
-      compactTiles
-    ) : (
-      <Box key="tiles" flexDirection="column" rowGap={space.stack}>
-        {tileRows.map((r, i) => (
-          <Box
-            key={`tr-${i}`}
-            flexDirection="row"
-            columnGap={isCompact ? space.gap : 1}
-          >
-            {Array.from({ length: perRow }, (_, j) => (
-              <Box
-                key={`tc-${j}`}
-                flexDirection="column"
-                width={0}
-                minWidth={0}
-                flexGrow={1}
-              >
-                {r[j] ?? null}
-              </Box>
-            ))}
-          </Box>
-        ))}
-      </Box>
-    );
+    const colW = isNarrow ? "100%" : "col";
 
-    // ── Header ───────────────────────────────────────────────────────────
-    const header = (
-      <Box
-        key="header"
-        justifyContent="space-between"
-        alignItems="center"
-        columnGap={space.gap}
-      >
-        <Box flexDirection="row" alignItems="center" columnGap={space.gap}>
-          {Svg ? (
-            <Svg
-              source={
-                !anim
-                  ? LOGO_SVG
-                  : running.length > 0
-                    ? LOGO_LIVE_SVG
-                    : LOGO_IDLE_SVG
-              }
-              alt="Vanguard"
-              width={isCompact ? 28 : 36}
-              height={isCompact ? 28 : 36}
-              isInteractive={anim && takeFrame() ? true : undefined}
-            />
-          ) : (
-            <Text bold color="claude">
-              ⚔
-            </Text>
-          )}
-          <Box flexDirection="column">
-            <Box flexDirection="row" alignItems="center" columnGap={1}>
-              <Text bold color="claude">
-                {Svg ? "Vanguard" : "VANGUARD"}
-              </Text>
-              {running.length > 0 ? live("eq", "claude", 14, "eq") : null}
-            </Box>
-            <Text dimColor wrap="truncate-end">
-              {`${T.sessionNo((life?.sessions ?? 0) + 1)} · `}
-              {boss && boss.model !== "?"
-                ? shortModel(boss.model)
-                : T.modelPending}
-              {isCompact
-                ? ""
-                : ` · ${
-                    running.length > 0
-                      ? T.agentsWorking(running.length)
-                      : T.noAgentsRunning
-                  }`}
-            </Text>
-          </Box>
-        </Box>
-        {isCompact ? (
-          <Box flexShrink={0}>
-            <Text bold color="warning">
-              {T.levelShort(lv.level)}
-            </Text>
-          </Box>
-        ) : (
-          <Box flexDirection="column" alignItems="flex-end">
-            {line(
-              "lv",
-              icon("trophy", "warning"),
-              <Text bold color="warning">
-                {T.level(lv.level)}
-              </Text>,
-            )}
-            <Box flexDirection="row" alignItems="center" columnGap={1}>
-              {Svg && anim && takeFrame() ? (
-                <Svg
-                  source={shineBarSvg(lv.progress, "claude")}
-                  alt={`${Math.round(lv.progress)}%`}
-                  width={14 * 9}
-                  height={8}
-                  isInteractive
-                />
-              ) : (
-                progress(lv.progress, "claude", 14)
-              )}
-              <Text dimColor>
-                {lv.xp} XP{sessionXp ? ` · ${T.sessionGain(sessionXp)}` : ""}
-              </Text>
-            </Box>
-          </Box>
-        )}
-      </Box>
-    );
-
-    // ── Main agent ───────────────────────────────────────────────────────
-    const bossBadge = modelBadge(boss?.model ?? "");
-    const bossBody = boss ? (
-      <Box flexDirection="column" rowGap={space.inner}>
-        <Box justifyContent="space-between" columnGap={space.gap}>
-          {line(
-            "model",
-            icon(bossBadge.icon, bossBadge.color, 16),
-            <Text bold color={bossBadge.color}>
-              {boss.model === "?" ? T.waitingFirstStep : shortModel(boss.model)}
-            </Text>,
-          )}
-          <Text>
-            <Text color="warning">{effortDots(boss.effort)}</Text>
-            <Text dimColor> {effortLabel(boss.effort, T.effort)}</Text>
-          </Text>
-        </Box>
-        <Box
-          flexDirection="row"
-          alignItems="center"
-          columnGap={1}
-          flexWrap="wrap"
-        >
-          {icon("activity", "inactive", 12, "s")}
-          <Text dimColor>{T.steps(boss.steps)}</Text>
-          <Text dimColor>·</Text>
-          {icon("wrench", "inactive", 12, "w")}
-          <Text dimColor>{T.calls(boss.actions)}</Text>
-        </Box>
-        <Box flexDirection="column">
-          <Text dimColor>{T.now}</Text>
-          {action("now", boss.lastAction, boss.lastDetail)}
-        </Box>
-        {boss.toolCounts && Object.keys(boss.toolCounts).length > 0 ? (
-          <Box flexDirection="column">
-            <Text dimColor>{T.mostUsed}</Text>
-            <Text wrap="truncate-end">
-              {topTools(boss.toolCounts, isCompact ? 3 : 4, mcpNames)}
-            </Text>
-          </Box>
-        ) : null}
-      </Box>
-    ) : (
-      <Text dimColor>{T.waitingFirstPrompt}</Text>
-    );
-
-    // ── Limits ───────────────────────────────────────────────────────────
-    const sparkWidth = Math.max(8, Math.min(30, colWidth - 20));
-    const ctxSeries = samples.flatMap((s) =>
-      s.ctx === undefined ? [] : [100 - s.ctx],
-    );
-    const ctxNote =
-      m && m.contextTokens !== undefined && m.contextWindow > 0
-        ? T.ctxFree(
-            fmtTokens(Math.max(0, m.contextWindow - m.contextTokens)),
-            fmtTokens(m.contextWindow),
-          )
-        : "";
-    const fivePoints = samples.flatMap((s) =>
-      s.five === undefined ? [] : [{ at: s.at, value: s.five }],
-    );
-    const rateNote = (kind: string, resetsAt?: string) => {
-      const at = resetsAt ? Date.parse(resetsAt) : NaN;
-      const reset = Number.isNaN(at)
-        ? ""
-        : T.resets(fmtReset(at, now, LOCALE[L]), dur(at - now));
-      if (kind !== "five_hour") return reset;
-      const eta = etaToFull(fivePoints, now);
-      if (eta === undefined || (!Number.isNaN(at) && eta >= at)) return reset;
-
-      return `${reset}${reset ? " · " : ""}${T.runsOut(fmtClock(eta))}`;
-    };
-    const resBody = (
-      <Box flexDirection="column" rowGap={space.inner}>
-        {ctxUsed !== undefined
-          ? meter("ctx", "layers", T.ctx, 100 - ctxUsed, ctxNote, ctxSeries)
-          : line(
-              "ctx",
-              icon("layers", "inactive"),
-              <Text dimColor>{T.ctxNoData}</Text>,
-            )}
-        {(m?.rates ?? []).map((r) =>
-          meter(
-            r.kind,
-            r.kind === "seven_day" ? "calendar" : "gauge",
-            rateLabel(r.kind, T.rate),
-            100 - r.percentUsed,
-            rateNote(r.kind, r.resetsAt),
-          ),
-        )}
-      </Box>
-    );
-
-    // ── Context guard ────────────────────────────────────────────────────
-    const guardColor =
-      ctx === "critical" ? "error" : ctx === "warn" ? "warning" : "success";
-    const guardText =
-      ctx === "critical"
-        ? T.guardCritical
-        : ctx === "warn"
-          ? T.guardWarn
-          : T.guardOk;
-    const snapText = snap
-      ? `${fmtClock(snap.at)} · ${snap.path.replace(/^.*\/\.claude\//, "~/.claude/")}`
-      : T.snapNone;
-    const guardWide = layout === "medium";
-    const guardBody = (
-      <Box
-        flexDirection={guardWide ? "row" : "column"}
-        justifyContent="space-between"
-        alignItems={guardWide ? "center" : "stretch"}
-        columnGap={space.gap}
-        rowGap={space.inner}
-      >
-        <Box flexDirection="column" rowGap={space.inner} flexShrink={1}>
-          {line(
-            "state",
-            ctx === "ok"
-              ? icon("check", guardColor)
-              : live("pulse", guardColor, 14),
-            <Text color={guardColor}>{guardText}</Text>,
-          )}
-          {line(
-            "snap",
-            icon("save", "inactive", 13),
-            <Text dimColor wrap="truncate-start">
-              {T.snapshot(snapText)}
-            </Text>,
-          )}
-        </Box>
-        <Box columnGap={space.gap} rowGap={space.stack} flexWrap="wrap">
-          <Button
-            key="compact"
-            label={T.btnCompact}
-            variant={ctx === "ok" ? "secondary" : "primary"}
-            onPress={async () => $.ui.toast(await compactNow($))}
-          />
-          {snap ? (
-            <Button
-              key="copy"
-              label={isCompact ? T.btnCopyShort : T.btnCopy}
-              variant="secondary"
-              onPress={async () => {
-                const r = await $.ui.copy({
-                  text: T.resume(snap.path),
-                  surface: e.surface,
-                });
-                $.ui.toast(r.isCopied ? T.copied : T.copyFailed);
-              }}
-            />
-          ) : null}
-        </Box>
-      </Box>
-    );
-
-    // ── Running agents ───────────────────────────────────────────────────
-    const agentCard = (hero: Hero) => {
-      const badge = modelBadge(hero.model);
-      const elapsed = (hero.endedAt ?? now) - hero.startedAt;
-
-      return (
-        <Box
-          key={hero.id}
-          flexDirection="column"
-          borderStyle="round"
-          borderColor="inactive"
-          hover={{ borderColor: badge.color }}
-          paddingX={space.padX}
-          paddingY={1}
-          rowGap={1}
-          width={cardWidth}
-        >
-          <Box justifyContent="space-between">
-            {line(
-              "model",
-              live("loader", badge.color, 14),
-              <Text bold color={badge.color}>
-                {hero.model === "?" ? T.modelPending : shortModel(hero.model)}
-              </Text>,
-            )}
-            <Text color="warning">{effortDots(hero.effort)}</Text>
-          </Box>
-          <Box flexDirection="column">
-            <Text bold wrap="truncate-end">
-              {clip(hero.title, cardWidth - frame - 1)}
-            </Text>
-            <Text dimColor wrap="truncate-end">
-              {hero.type}
-            </Text>
-          </Box>
-          <Box flexDirection="row" alignItems="center" columnGap={1}>
-            {icon("clock", "inactive", 12, "c")}
-            <Text dimColor>{dur(elapsed)}</Text>
-            <Text dimColor>·</Text>
-            {icon("wrench", "inactive", 12, "w")}
-            <Text dimColor>{hero.actions}</Text>
-            {hero.tokens ? <Text dimColor>·</Text> : null}
-            {hero.tokens ? icon("layers", "inactive", 12, "t") : null}
-            {hero.tokens ? (
-              <Text dimColor>{fmtTokens(hero.tokens)}</Text>
-            ) : null}
-          </Box>
-          {action("now", hero.lastAction, hero.lastDetail, cardWidth)}
-          {anim ? (
-            <Text color={badge.color}>{pulseBar(now, cardWidth - frame)}</Text>
-          ) : null}
-          <Box
-            display="none"
-            hover={{ display: "flex" }}
-            flexDirection="column"
-          >
-            <Text dimColor wrap="truncate-end">
-              {T.startedAt(
-                fmtClock(hero.startedAt),
-                effortLabel(hero.effort, T.effort),
-              )}
-            </Text>
-            <Text dimColor wrap="truncate-end">
-              id {hero.id}
-            </Text>
-          </Box>
-        </Box>
-      );
-    };
-
-    const agentRow = (hero: Hero) => {
-      const badge = modelBadge(hero.model);
-
-      return (
-        <Box key={hero.id} flexDirection="column">
-          <Box justifyContent="space-between" columnGap={1}>
-            {line(
-              "t",
-              live("loader", badge.color, 13),
-              <Text bold wrap="truncate-end">
-                {clip(hero.title, inner - frame - 18)}
-              </Text>,
-            )}
-            <Text dimColor>
-              {dur(now - hero.startedAt)} · {hero.actions}
-            </Text>
-          </Box>
-          <Box paddingLeft={2}>
-            {action("now", hero.lastAction, hero.lastDetail, inner)}
-          </Box>
-        </Box>
-      );
-    };
-
-    const modelMix = Object.entries(
-      running.reduce<Record<string, number>>((acc, x) => {
-        const k = shortModel(x.model).split(" ")[0] ?? "?";
-        acc[k] = (acc[k] ?? 0) + 1;
-        return acc;
-      }, {}),
-    )
-      .map(([k, n]) => `${n} ${k}`)
-      .join(" · ");
-
-    const partyBody =
-      running.length === 0 ? (
-        line(
-          "empty",
-          icon("bot", "inactive"),
-          <Text dimColor>{T.noSubagents}</Text>,
-        )
-      ) : isCompact ? (
-        <Box flexDirection="column" rowGap={space.stack}>
-          {running.map(agentRow)}
-        </Box>
-      ) : (
-        <Box
-          flexDirection="row"
-          flexWrap="wrap"
-          columnGap={gutter}
-          rowGap={space.stack}
-        >
-          {running.map(agentCard)}
-        </Box>
-      );
-
-    // ── Finished and log ─────────────────────────────────────────────────
-    const doneRow = (hero: Hero) => {
-      const badge = modelBadge(hero.model);
-      const view = STATUS_VIEW[hero.status];
-      const elapsed = (hero.endedAt ?? now) - hero.startedAt;
-      const extra = isCompact
-        ? dur(elapsed)
-        : `${dur(elapsed)} · ${T.callsShort(hero.actions)}${hero.tokens ? ` · ${fmtTokens(hero.tokens)}` : ""}`;
-
-      return (
-        <Box key={hero.id} justifyContent="space-between" columnGap={1}>
-          <Box flexDirection="row" alignItems="center" columnGap={1}>
-            {hero.status === "done" &&
-            anim &&
-            now - (hero.endedAt ?? 0) < FRESH_DONE_MS ? (
-              Svg && takeFrame() ? (
-                <Svg
-                  key="s"
-                  source={popCheckSvg(view.color)}
-                  alt={T.doneAlt}
-                  width={14}
-                  height={14}
-                  isInteractive
-                />
-              ) : (
-                <Text key="s" color={view.color} bold>
-                  {Math.floor(now / 500) % 2 ? "✔" : "✓"}
-                </Text>
-              )
-            ) : (
-              icon(view.icon, view.color, 14, "s")
-            )}
-            {icon(badge.icon, badge.color, 12, "m")}
-            <Text wrap="truncate-end">
-              {clip(
-                hero.title,
-                Math.max(10, pairWidth - frame - extra.length - 10),
-              )}
-            </Text>
-          </Box>
-          <Text dimColor>{extra}</Text>
-        </Box>
-      );
-    };
-
-    const doneBody =
-      finished.length === 0 ? (
-        <Text dimColor>{T.nothingYet}</Text>
-      ) : (
-        <Box flexDirection="column">
-          {finished
-            .slice(isCompact ? -4 : -7)
-            .reverse()
-            .map(doneRow)}
-        </Box>
-      );
-    const logBody =
-      lines.length === 0 ? (
-        <Text dimColor>{T.noEvents}</Text>
-      ) : (
-        <Box flexDirection="column">
-          {lines
-            .slice(isCompact ? -4 : -7)
-            .reverse()
-            .map((l, i) => (
-              <Box
-                key={`log-${i}`}
-                flexDirection="row"
-                alignItems="center"
-                columnGap={1}
-              >
-                <Text dimColor>{fmtClock(l.at)}</Text>
-                {icon(l.icon, l.color ?? "inactive", 12)}
-                <Text wrap="truncate-end">
-                  {clip(logText(l), pairWidth - frame - 12)}
-                </Text>
-              </Box>
-            ))}
-        </Box>
-      );
-
-    // ── Arsenal: MCP servers, plugins, skills ─────────────────────────────
-    /** Columns of equal cells that fit a half-width section, cells at least `min` wide. */
-    const gridCols = (min: number) =>
-      Math.max(1, Math.min(5, Math.floor((inner - frame + 1) / (min + 1))));
     /** Lays cells out in rows of `cols` equal columns; blanks pad the last row. */
-    const grid = (key: string, cells: RenderNode[], cols: number) => {
+    const grid = (
+      key: string,
+      cells: RenderNode[],
+      cols: number,
+      rowGap: number = space.gapY,
+      columnGap: number = space.gapX,
+    ) => {
       const rows: RenderNode[][] = [];
       for (let i = 0; i < cells.length; i += cols)
         rows.push(cells.slice(i, i + cols));
 
       return (
-        <Box key={key} flexDirection="column" rowGap={isCompact ? 0 : 1}>
+        <Box key={key} flexDirection="column" rowGap={rowGap}>
           {rows.map((r, i) => (
-            <Box key={`${key}-r${i}`} flexDirection="row" columnGap={1}>
+            <Box key={`${key}-r${i}`} flexDirection="row" columnGap={columnGap}>
               {Array.from({ length: cols }, (_, j) => (
                 <Box
                   key={`${key}-c${j}`}
@@ -2045,28 +1400,92 @@ export const register: Register = (on, options) => {
         </Box>
       );
     };
-    /** One grid cell: icon and label on the left, a count or note pinned right. */
-    const cell = (
+
+    /** Opens an agent's page. */
+    const openAgent = async (id: string) => {
+      await update($, focus, () => id);
+      await $.ui.scroll({ in: PANE, to: "start" }).catch(() => {});
+    };
+    /** An agent's name that opens its page when pressed. */
+    const opener = (
+      id: string,
+      title: string,
+      max: number,
+      isBold = true,
+    ): RenderNode => (
+      <Button
+        key={`open-${id}`}
+        plain
+        label={T.openAgent(title)}
+        onPress={() => openAgent(id)}
+      >
+        <Text bold={isBold}>{clip(title, Math.max(8, max))}</Text>
+      </Button>
+    );
+
+    /** What a squad member is busy with: a verb for the kind of work, then its object. */
+    const doing = (
       key: string,
-      name: IconName,
-      color: string,
-      label: string,
-      isLit: boolean,
-      right: string | undefined,
-      lead?: RenderNode,
-    ) => (
+      tool: string | undefined,
+      detail: string | undefined,
+      max: number,
+    ): RenderNode => {
+      const act = activityOf(tool);
+      const verb =
+        tool && act === "think"
+          ? toolLabel(tool, mcpNames)
+          : (T.doing[act] ?? act);
+
+      return line(
+        key,
+        icon(tool ? toolIcon(tool) : "sparkles", "subtle", 12),
+        <Text wrap="truncate-end">
+          <Text>{verb}</Text>
+          {detail ? (
+            <Text dimColor> · {clip(detail, Math.max(8, max - 12))}</Text>
+          ) : null}
+        </Text>,
+      );
+    };
+
+    /** How a finished agent ended, and how long it took. */
+    const outcome = (key: string, hero: Hero): RenderNode => {
+      const view = STATUS_VIEW[hero.status];
+
+      return line(
+        key,
+        icon(view.icon, view.color, 12),
+        <Text wrap="truncate-end">
+          <Text color={view.color}>{T.status[hero.status]}</Text>
+          <Text dimColor> · {dur((hero.endedAt ?? now) - hero.startedAt)}</Text>
+        </Text>,
+      );
+    };
+
+    const moodOf = (hero: Hero): Mood =>
+      hero.status === "running" ? "working" : hero.status;
+    const modelName = (model: string | undefined) =>
+      !model || model === "?" ? T.modelPending : shortModel(model);
+
+    // ── Header ───────────────────────────────────────────────────────────
+    const subtitle = `${T.sessionNo((life?.sessions ?? 0) + 1)} · ${
+      boss && boss.model !== "?" ? shortModel(boss.model) : T.modelPending
+    }${
+      isNarrow
+        ? ""
+        : ` · ${
+            running.length > 0
+              ? T.agentsWorking(running.length)
+              : T.noAgentsRunning
+          }`
+    }`;
+    const header = (
       <Box
-        key={key}
+        key="header"
         flexDirection="row"
-        alignItems="center"
         justifyContent="space-between"
-        columnGap={1}
-        paddingX={1}
-        width="100%"
-        borderStyle={isCompact ? undefined : "round"}
-        borderColor={isLit ? color : "inactive"}
-        borderDimColor={!isLit}
-        hover={{ borderColor: color }}
+        alignItems="center"
+        columnGap={space.gapX}
       >
         <Box
           flexDirection="row"
@@ -2075,7 +1494,753 @@ export const register: Register = (on, options) => {
           flexShrink={1}
           minWidth={0}
         >
-          {lead ?? icon(name, isLit ? color : "inactive", 12)}
+          {Svg ? (
+            <Svg
+              key="logo"
+              source={LOGO_SVG}
+              alt="Vanguard"
+              width={28}
+              height={28}
+            />
+          ) : (
+            <Text bold color="claude">
+              ⚔
+            </Text>
+          )}
+          <Box flexDirection="column" flexShrink={1} minWidth={0}>
+            <Text bold color="claude">
+              {Svg ? "Vanguard" : "VANGUARD"}
+            </Text>
+            <Text dimColor wrap="truncate-end">
+              {subtitle}
+            </Text>
+          </Box>
+        </Box>
+        <Box flexDirection="column" alignItems="flex-end" flexShrink={0}>
+          <Text bold color="warning">
+            {isNarrow ? T.levelShort(lv.level) : T.level(lv.level)}
+          </Text>
+          <Text dimColor>
+            {lv.xp} XP
+            {sessionXp && !isNarrow ? ` · ${T.sessionGain(sessionXp)}` : ""}
+          </Text>
+        </Box>
+      </Box>
+    );
+
+    // ── Stats: one line of figures ───────────────────────────────────────
+    const stat = (
+      key: string,
+      name: IconName,
+      color: string,
+      label: string,
+      value: string,
+    ) => (
+      <Box
+        key={key}
+        flexDirection="row"
+        alignItems="center"
+        columnGap={1}
+        flexShrink={0}
+      >
+        {icon(name, color, 12)}
+        <Text>
+          <Text dimColor>{label} </Text>
+          <Text bold>{value}</Text>
+        </Text>
+      </Box>
+    );
+    const stats = (
+      <Box
+        key="stats"
+        flexDirection="row"
+        flexWrap="wrap"
+        columnGap={3}
+        rowGap={0}
+      >
+        {stat("s-time", "clock", "claude", T.tileSession, age(sessionMs))}
+        {stat(
+          "s-agents",
+          "users",
+          "warning",
+          T.figAgents,
+          `${running.length}/${list.length}${lost ? ` · ${lost} ✗` : ""}`,
+        )}
+        {stat("s-calls", "wrench", "suggestion", T.tileCalls, String(actions))}
+        {agentTokens
+          ? stat(
+              "s-tokens",
+              "layers",
+              "merged",
+              T.figTokens,
+              fmtTokens(agentTokens),
+            )
+          : null}
+        {m?.usd !== undefined
+          ? stat(
+              "s-usd",
+              "coins",
+              "success",
+              T.tileSpend,
+              `$${m.usd.toFixed(2)}`,
+            )
+          : null}
+      </Box>
+    );
+
+    // ── Squad: the main agent and every subagent, as characters ──────────
+    const stageCols = Math.max(
+      1,
+      Math.min(
+        4,
+        Math.floor((inner + space.gapX) / ((Svg ? 36 : 28) + space.gapX)),
+      ),
+    );
+    // Text room in a card: its column, less the frame, the inset and the portrait.
+    const cardText =
+      colRoom(stageCols) -
+      2 -
+      space.cardX * 2 -
+      (showArt ? PORTRAIT_CELLS + 1 : 0);
+    const card = (
+      key: string,
+      color: string,
+      art: RenderNode,
+      rows: RenderNode[],
+    ) => (
+      <Box
+        key={key}
+        flexDirection="row"
+        alignItems="center"
+        columnGap={1}
+        borderStyle="round"
+        borderColor="inactive"
+        hover={{ borderColor: color }}
+        paddingX={space.cardX}
+        minWidth={0}
+        width="100%"
+      >
+        {showArt ? (
+          <Box
+            flexShrink={0}
+            width={PORTRAIT_CELLS}
+            alignItems="center"
+            justifyContent="center"
+          >
+            {art}
+          </Box>
+        ) : null}
+        <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
+          {showArt
+            ? rows
+            : [line("head", art, rows[0] ?? null), ...rows.slice(1)]}
+        </Box>
+      </Box>
+    );
+    const roleLine = (
+      key: string,
+      role: Role,
+      model: string | undefined,
+      effort?: string,
+    ) => (
+      <Text key={key} wrap="truncate-end">
+        <Text color={ROLE_COLOR[role]}>{T.roles[role] ?? role}</Text>
+        <Text dimColor> · {modelName(model)}</Text>
+        {effort ? <Text color="warning"> {effortDots(effort)}</Text> : null}
+      </Text>
+    );
+    const isBusy = boss?.busy === true;
+    const bossCard = card(
+      "card-main",
+      ROLE_COLOR.commander,
+      portrait(
+        "art-main",
+        "commander",
+        activityOf(boss?.lastAction),
+        isBusy ? "working" : "waiting",
+        MAIN,
+        PORTRAIT_PX,
+      ),
+      [
+        opener(MAIN, T.secMain, cardText),
+        roleLine("sub", "commander", boss?.model, boss?.effort),
+        isBusy
+          ? doing("now", boss?.lastAction, boss?.lastDetail, cardText)
+          : line(
+              "now",
+              icon("clock", "inactive", 12),
+              <Text dimColor wrap="truncate-end">
+                {boss ? T.waitingYou : T.waitingFirstPrompt}
+              </Text>,
+            ),
+        <Text key="meta" dimColor wrap="truncate-end">
+          {T.steps(boss?.steps ?? 0)} · {T.calls(boss?.actions ?? 0)}
+        </Text>,
+      ],
+    );
+    const heroCard = (hero: Hero) => {
+      const role = roleOf(hero.type ?? "");
+
+      return card(
+        `card-${hero.id}`,
+        hero.status === "running"
+          ? ROLE_COLOR[role]
+          : STATUS_VIEW[hero.status].color,
+        portrait(
+          `art-${hero.id}`,
+          role,
+          activityOf(hero.lastAction),
+          moodOf(hero),
+          hero.id,
+          PORTRAIT_PX,
+        ),
+        [
+          opener(hero.id, hero.title, cardText),
+          roleLine("sub", role, hero.model, hero.effort),
+          hero.status === "running"
+            ? doing("now", hero.lastAction, hero.lastDetail, cardText)
+            : outcome("now", hero),
+          <Text key="meta" dimColor wrap="truncate-end">
+            {age((hero.endedAt ?? now) - hero.startedAt)} ·{" "}
+            {T.calls(hero.actions)}
+            {hero.tokens ? ` · ${fmtTokens(hero.tokens)}` : ""}
+          </Text>,
+        ],
+      );
+    };
+    // An empty seat beside the main agent says where subagents will appear.
+    const emptySeat = (
+      <Box
+        key="seat"
+        flexDirection="column"
+        justifyContent="center"
+        borderStyle="dashed"
+        borderColor="inactive"
+        borderDimColor
+        paddingX={space.cardX}
+        minWidth={0}
+        width="100%"
+      >
+        {line(
+          "empty",
+          icon("bot", "inactive", 13),
+          <Text dimColor wrap="truncate-end">
+            {T.noSubagents}
+          </Text>,
+        )}
+        <Text dimColor wrap="wrap">
+          {T.squadHint}
+        </Text>
+      </Box>
+    );
+    const onStage = [...running, ...bowing];
+    const modelMix = Object.entries(
+      running.reduce<Record<string, number>>((acc, x) => {
+        const k = shortModel(x.model).split(" ")[0] ?? "?";
+        acc[k] = (acc[k] ?? 0) + 1;
+        return acc;
+      }, {}),
+    )
+      .map(([k, n]) => `${n} ${k}`)
+      .join(" · ");
+    const squadSection = section(
+      "party",
+      "users",
+      T.secSquad,
+      "warning",
+      grid(
+        "stage",
+        [
+          bossCard,
+          ...onStage.map(heroCard),
+          ...(onStage.length === 0 ? [emptySeat] : []),
+        ],
+        stageCols,
+      ),
+      "100%",
+      running.length > 0 && !isNarrow ? (
+        <Text dimColor>{modelMix}</Text>
+      ) : undefined,
+    );
+
+    // ── Limits ───────────────────────────────────────────────────────────
+    const ctxNote =
+      m && m.contextTokens !== undefined && m.contextWindow > 0
+        ? T.ctxFree(
+            fmtTokens(Math.max(0, m.contextWindow - m.contextTokens)),
+            fmtTokens(m.contextWindow),
+          )
+        : "";
+    const fivePoints = samples.flatMap((s) =>
+      s.five === undefined ? [] : [{ at: s.at, value: s.five }],
+    );
+    const rateNote = (kind: string, resetsAt?: string) => {
+      const at = resetsAt ? Date.parse(resetsAt) : NaN;
+      const reset = Number.isNaN(at)
+        ? ""
+        : T.resets(fmtReset(at, now, LOCALE[L]), age(at - now));
+      if (kind !== "five_hour") return reset;
+      const eta = etaToFull(fivePoints, now);
+      if (eta === undefined || (!Number.isNaN(at) && eta >= at)) return reset;
+
+      return `${reset}${reset ? " · " : ""}${T.runsOut(fmtClock(eta))}`;
+    };
+    // Limits and the finished list share a row on a wide pane, when both show.
+    const isPaired = isWide && offStage.length > 0;
+    const limitsRoom = isPaired ? half : inner;
+    const labelCells = isNarrow ? 8 : 10;
+    const barCells = Math.max(4, Math.min(16, limitsRoom - labelCells - 10));
+    // The note fits beside the bar on a wide row, under it otherwise.
+    const noteBeside = limitsRoom - labelCells - barCells - 8 >= 24;
+    const meter = (
+      key: string,
+      name: IconName,
+      label: string,
+      percentLeft: number,
+      note: string,
+    ) => {
+      const color = meterColor(percentLeft);
+
+      return (
+        <Box key={key} flexDirection="column" minWidth={0}>
+          <Box flexDirection="row" alignItems="center" columnGap={1}>
+            {icon(name, color, 13, "i")}
+            <Text key="l">{pad(label, labelCells)}</Text>
+            {progress(percentLeft, color, barCells, "b")}
+            <Text key="p" bold>
+              {pad(`${Math.round(percentLeft)}%`, 4)}
+            </Text>
+            {noteBeside && note ? (
+              <Text key="n" dimColor wrap="truncate-end">
+                {note}
+              </Text>
+            ) : null}
+          </Box>
+          {!noteBeside && note ? (
+            <Box paddingLeft={3}>
+              <Text dimColor wrap="truncate-end">
+                {note}
+              </Text>
+            </Box>
+          ) : null}
+        </Box>
+      );
+    };
+    const guardColor =
+      ctx === "critical" ? "error" : ctx === "warn" ? "warning" : "success";
+    const guardText =
+      ctx === "critical"
+        ? T.guardCritical
+        : ctx === "warn"
+          ? T.guardWarn
+          : T.guardOk;
+    const compactButton = (
+      <Button
+        key="compact"
+        label={T.btnCompact}
+        variant={ctx === "ok" ? "secondary" : "primary"}
+        onPress={async () => $.ui.toast(await compactNow($))}
+      />
+    );
+    const guardLine = (
+      <Box
+        key="guard"
+        flexDirection="row"
+        alignItems="center"
+        justifyContent="space-between"
+        flexWrap="wrap"
+        columnGap={space.gapX}
+        rowGap={0}
+      >
+        {line(
+          "state",
+          icon(ctx === "ok" ? "check" : "shield", guardColor, 13),
+          <Text color={guardColor} wrap="truncate-end">
+            {guardText}
+          </Text>,
+        )}
+        {compactButton}
+      </Box>
+    );
+    const limitsSection = section(
+      "res",
+      "gauge",
+      T.secLimits,
+      "suggestion",
+      <Box flexDirection="column" rowGap={0}>
+        {ctxUsed !== undefined
+          ? meter("ctx", "layers", T.ctx, 100 - ctxUsed, ctxNote)
+          : line(
+              "ctx",
+              icon("layers", "inactive", 13),
+              <Text dimColor>{T.ctxNoData}</Text>,
+            )}
+        {(m?.rates ?? []).map((r) =>
+          meter(
+            r.kind,
+            r.kind === "seven_day" ? "calendar" : "gauge",
+            rateLabel(r.kind, T.rate),
+            100 - r.percentUsed,
+            rateNote(r.kind, r.resetsAt),
+          ),
+        )}
+        {guardLine}
+      </Box>,
+      isPaired ? "col" : "100%",
+      <Text dimColor>{T.remaining}</Text>,
+    );
+
+    // ── Finished and journal ─────────────────────────────────────────────
+    const doneRow = (hero: Hero) => {
+      const view = STATUS_VIEW[hero.status];
+      const extra = isNarrow
+        ? dur((hero.endedAt ?? now) - hero.startedAt)
+        : `${dur((hero.endedAt ?? now) - hero.startedAt)} · ${T.callsShort(hero.actions)}`;
+
+      return (
+        <Box
+          key={hero.id}
+          flexDirection="row"
+          justifyContent="space-between"
+          alignItems="center"
+          columnGap={1}
+          minWidth={0}
+        >
+          {line(
+            "t",
+            icon(view.icon, view.color, 12, "s"),
+            opener(hero.id, hero.title, half - extra.length - 6, false),
+          )}
+          <Box flexShrink={0}>
+            <Text dimColor>{extra}</Text>
+          </Box>
+        </Box>
+      );
+    };
+    const doneList = (shown: Hero[], n: number) =>
+      shown.length === 0 ? (
+        <Text dimColor>{T.nothingYet}</Text>
+      ) : (
+        <Box flexDirection="column">
+          {shown.slice(-n).reverse().map(doneRow)}
+        </Box>
+      );
+    const doneAside = (
+      <Text dimColor>
+        {won} ✓{lost ? ` · ${lost} ✗` : ""}
+      </Text>
+    );
+    const recentSection =
+      offStage.length > 0
+        ? section(
+            "recent",
+            "trophy",
+            T.secDone,
+            "success",
+            doneList(offStage, isNarrow ? 3 : 5),
+            isPaired ? "col" : "100%",
+            doneAside,
+          )
+        : null;
+    const doneSection = section(
+      "done",
+      "trophy",
+      T.secDone,
+      "success",
+      doneList(finished, isNarrow ? 6 : 10),
+      colW,
+      doneAside,
+    );
+    const logSection = section(
+      "log",
+      "list",
+      T.secLog,
+      "inactive",
+      lines.length === 0 ? (
+        <Text dimColor>{T.noEvents}</Text>
+      ) : (
+        <Box flexDirection="column">
+          {lines
+            .slice(isNarrow ? -6 : -12)
+            .reverse()
+            .map((l, i) => (
+              <Box
+                key={`log-${i}`}
+                flexDirection="row"
+                alignItems="center"
+                columnGap={1}
+                minWidth={0}
+              >
+                <Text dimColor>{fmtClock(l.at)}</Text>
+                {icon(l.icon, l.color ?? "inactive", 12)}
+                <Text wrap="truncate-end">
+                  {clip(logText(l), Math.max(12, half - 10))}
+                </Text>
+              </Box>
+            ))}
+        </Box>
+      ),
+      colW,
+    );
+
+    // ── An agent's page ──────────────────────────────────────────────────
+    const focused =
+      focusId === MAIN ? MAIN : list.find((x) => x.id === focusId);
+    const agentPage = (who: Hero | typeof MAIN): RenderNode[] => {
+      const isMain = who === MAIN;
+      const hero = isMain ? undefined : who;
+      const role: Role = hero ? roleOf(hero.type ?? "") : "commander";
+      const color = ROLE_COLOR[role];
+      const title = hero ? hero.title : T.secMain;
+      const tool = hero ? hero.lastAction : boss?.lastAction;
+      const isWorking = hero ? hero.status === "running" : isBusy;
+      const mood: Mood = hero ? moodOf(hero) : isBusy ? "working" : "waiting";
+      const trail = (hero ? hero.trail : boss?.trail) ?? [];
+      const counts = (hero ? hero.toolCounts : boss?.toolCounts) ?? {};
+      const artPx = isNarrow ? PORTRAIT_PX : DETAIL_PX;
+      const artCells = isNarrow ? PORTRAIT_CELLS : DETAIL_CELLS;
+      const textRoom = inner - (showArt ? artCells + 2 : 0) - 6;
+
+      const status = hero
+        ? hero.status === "running"
+          ? line(
+              "status",
+              icon("activity", "warning", 12),
+              <Text>
+                <Text color="warning">{T.status.running}</Text>
+                <Text dimColor> · {age(now - hero.startedAt)}</Text>
+              </Text>,
+            )
+          : outcome("status", hero)
+        : line(
+            "status",
+            icon(
+              isBusy ? "activity" : "clock",
+              isBusy ? "warning" : "inactive",
+              12,
+            ),
+            <Text color={isBusy ? "warning" : undefined} dimColor={!isBusy}>
+              {isBusy ? T.status.running : T.waitingYou}
+            </Text>,
+          );
+      const figures = hero
+        ? [
+            hero.type,
+            T.calls(hero.actions),
+            ...(hero.tokens ? [fmtTokens(hero.tokens)] : []),
+            T.since(fmtClock(hero.startedAt)),
+          ]
+        : [T.steps(boss?.steps ?? 0), T.calls(boss?.actions ?? 0)];
+      const back = (
+        <Box
+          key="crumbs"
+          flexDirection="row"
+          alignItems="center"
+          columnGap={space.gapX}
+        >
+          <Button
+            key="back"
+            label={`← ${T.back}`}
+            onPress={() => update($, focus, () => null)}
+          />
+          <Text dimColor wrap="truncate-end">
+            {T.secSquad} › {T.roles[role] ?? role}
+          </Text>
+        </Box>
+      );
+      const heroPanel = (
+        <Box
+          key="hero"
+          flexDirection="row"
+          alignItems="center"
+          columnGap={space.gapX}
+          borderStyle="round"
+          borderColor={color}
+          paddingX={space.outerX}
+          minWidth={0}
+        >
+          {showArt ? (
+            <Box
+              flexShrink={0}
+              width={artCells}
+              alignItems="center"
+              justifyContent="center"
+            >
+              {portrait(
+                "art-page",
+                role,
+                activityOf(tool),
+                mood,
+                hero ? hero.id : MAIN,
+                artPx,
+              )}
+            </Box>
+          ) : null}
+          <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
+            {line(
+              "title",
+              showArt
+                ? null
+                : portrait("art-page", role, "think", mood, MAIN, 0),
+              <Text bold wrap="truncate-end">
+                {title}
+              </Text>,
+            )}
+            <Text wrap="truncate-end">
+              <Text color={color}>{T.roles[role] ?? role}</Text>
+              <Text dimColor>
+                {" "}
+                · {modelName(hero ? hero.model : boss?.model)} ·{" "}
+              </Text>
+              <Text color="warning">
+                {effortDots(hero ? hero.effort : boss?.effort)}
+              </Text>
+              <Text dimColor>
+                {" "}
+                {effortLabel(hero ? hero.effort : boss?.effort, T.effort)}
+              </Text>
+            </Text>
+            {status}
+            <Text dimColor wrap="truncate-end">
+              {figures.join(" · ")}
+            </Text>
+            {isWorking
+              ? doing(
+                  "now",
+                  tool,
+                  hero ? hero.lastDetail : boss?.lastDetail,
+                  textRoom,
+                )
+              : null}
+          </Box>
+        </Box>
+      );
+      const prose = (key: string, text: string) =>
+        Markdown ? (
+          <Markdown key={key} text={text} />
+        ) : (
+          <Text key={key} wrap="wrap">
+            {text}
+          </Text>
+        );
+      const steps = trail.slice(isNarrow ? -8 : -15).reverse();
+      const trailSection = section(
+        "trail",
+        "activity",
+        T.secTrail,
+        color,
+        steps.length === 0 ? (
+          <Text dimColor>{T.noTrail}</Text>
+        ) : (
+          <Box flexDirection="column">
+            {steps.map((s, i) => (
+              <Box
+                key={`step-${trail.length - i}`}
+                flexDirection="row"
+                alignItems="center"
+                columnGap={1}
+                minWidth={0}
+              >
+                <Text dimColor>{fmtClock(s.at)}</Text>
+                {icon(toolIcon(s.tool), "subtle", 12)}
+                <Text wrap="truncate-end">
+                  <Text bold>{toolLabel(s.tool, mcpNames)}</Text>
+                  {s.detail ? (
+                    <Text dimColor>
+                      {" "}
+                      ·{" "}
+                      {clip(
+                        s.detail,
+                        Math.max(12, (isWide ? half : inner) - 24),
+                      )}
+                    </Text>
+                  ) : null}
+                </Text>
+              </Box>
+            ))}
+          </Box>
+        ),
+        isWide ? "col" : "100%",
+        trail.length > 0 ? (
+          <Text dimColor>{hero ? hero.actions : (boss?.actions ?? 0)}</Text>
+        ) : undefined,
+      );
+      const toolsSection =
+        Object.keys(counts).length > 0
+          ? section(
+              "tools",
+              "wrench",
+              T.secTools,
+              color,
+              <Text wrap="truncate-end">
+                {topTools(counts, isNarrow ? 3 : 6, mcpNames)}
+              </Text>,
+            )
+          : null;
+      const taskSection = hero?.brief
+        ? section("task", "file", T.secTask, color, prose("brief", hero.brief))
+        : null;
+      const reportSection = hero?.report
+        ? section(
+            "report",
+            "check",
+            T.secReport,
+            "success",
+            prose("report", hero.report),
+          )
+        : null;
+      const words = [taskSection, toolsSection, reportSection].filter(
+        (x): x is NonNullable<typeof x> => x !== null,
+      );
+
+      return [
+        back,
+        heroPanel,
+        ...(isWide
+          ? [
+              row("page", [
+                <Box
+                  key="page-words"
+                  flexDirection="column"
+                  width={0}
+                  minWidth={0}
+                  flexGrow={1}
+                  rowGap={space.gapY}
+                >
+                  {words}
+                </Box>,
+                trailSection,
+              ]),
+            ]
+          : [...words, trailSection]),
+      ];
+    };
+
+    // ── Arsenal: MCP servers, plugins, skills ─────────────────────────────
+    /** Columns of equal cells that fit the pane, cells at least `min` wide. */
+    const gridCols = (min: number) =>
+      Math.max(1, Math.min(5, Math.floor((inner + 1) / (min + 1))));
+    /** One grid cell: icon and label on the left, a count or note pinned right. */
+    const cell = (
+      key: string,
+      name: IconName,
+      color: string,
+      label: string,
+      isLit: boolean,
+      right: string | undefined,
+    ) => (
+      <Box
+        key={key}
+        flexDirection="row"
+        alignItems="center"
+        justifyContent="space-between"
+        columnGap={1}
+        width="100%"
+        minWidth={0}
+      >
+        {line(
+          "l",
+          icon(name, isLit ? color : "inactive", 12),
           <Text
             bold={isLit}
             color={isLit ? color : undefined}
@@ -2083,16 +2248,18 @@ export const register: Register = (on, options) => {
             wrap="truncate-end"
           >
             {label}
-          </Text>
-        </Box>
+          </Text>,
+        )}
         {right ? (
-          <Text color={isLit ? color : undefined} dimColor={!isLit}>
-            {right}
-          </Text>
+          <Box flexShrink={0}>
+            <Text color={isLit ? color : undefined} dimColor={!isLit}>
+              {right}
+            </Text>
+          </Box>
         ) : null}
       </Box>
     );
-    const armCols = gridCols(18);
+    const armCols = gridCols(22);
     const chip = (
       key: string,
       name: IconName,
@@ -2111,32 +2278,25 @@ export const register: Register = (on, options) => {
       hotCount: number,
       chips: RenderNode[],
       more: number,
-    ) => (
-      <Box key={key} flexDirection="column" rowGap={space.inner}>
-        <Box
-          flexDirection="row"
-          alignItems="center"
-          justifyContent="space-between"
-          columnGap={1}
-        >
-          <Box flexDirection="row" alignItems="center" columnGap={1}>
-            {icon(name, color, 13)}
-            <Text bold>{title}</Text>
-            <Text dimColor>
-              {total}
-              {hotCount ? ` · ${T.inUse(hotCount)}` : ""}
-            </Text>
-          </Box>
-          {more > 0 ? <Text dimColor>{T.more(more)}</Text> : null}
-        </Box>
-        {total === 0 ? (
+    ) =>
+      section(
+        key,
+        name,
+        title,
+        color,
+        total === 0 ? (
           <Text dimColor>{T.none}</Text>
         ) : (
-          grid(`${key}-grid`, chips, armCols)
-        )}
-      </Box>
-    );
-    const chipLimit = armCols * (layout === "wide" ? 3 : 2);
+          grid(`${key}-grid`, chips, armCols, 0)
+        ),
+        "100%",
+        <Text dimColor>
+          {total}
+          {hotCount ? ` · ${T.inUse(hotCount)}` : ""}
+          {more > 0 ? ` · ${T.more(more)}` : ""}
+        </Text>,
+      );
+    const chipLimit = armCols * (isWide ? 4 : 3);
     const byUse = <T,>(items: T[], n: (x: T) => number) =>
       [...items].sort((a, b) => n(b) - n(a));
     const mcpList = byUse(arms?.mcp ?? [], (x) => used.mcp[x.name] ?? 0);
@@ -2149,112 +2309,106 @@ export const register: Register = (on, options) => {
       arms?.skills ?? [],
       (x) => used.skills[x.name] ?? 0,
     );
-    const arsenalBody = !arms ? (
-      <Text dimColor>{T.collecting}</Text>
-    ) : (
-      <Box flexDirection="column" rowGap={space.inner}>
-        {group(
-          "g-mcp",
-          "plug",
-          "suggestion",
-          T.groupMcp,
-          mcpList.length,
-          mcpList.filter((x) => used.mcp[x.name]).length,
-          mcpList
-            .slice(0, chipLimit)
-            .map((x) =>
-              chip(
-                `m-${x.name}`,
-                "plug",
-                "suggestion",
-                serverName(x.name),
-                used.mcp[x.name] ?? 0,
-                x.tokens ? fmtTokens(x.tokens) : `${x.tools}`,
+    const hotTotal =
+      Object.keys(used.mcp).length + Object.keys(used.skills).length;
+    const arsenalPage: RenderNode[] = !arms
+      ? [
+          <Text key="collecting" dimColor>
+            {T.collecting}
+          </Text>,
+        ]
+      : [
+          line(
+            "arsenal-head",
+            icon("swords", "suggestion"),
+            <Text wrap="truncate-end">
+              <Text bold>{T.secArsenal}</Text>
+              <Text dimColor>
+                {" "}
+                · {hotTotal ? T.inUse(hotTotal) : T.litHint}
+              </Text>
+            </Text>,
+          ),
+          group(
+            "g-mcp",
+            "plug",
+            "suggestion",
+            T.groupMcp,
+            mcpList.length,
+            mcpList.filter((x) => used.mcp[x.name]).length,
+            mcpList
+              .slice(0, chipLimit)
+              .map((x) =>
+                chip(
+                  `m-${x.name}`,
+                  "plug",
+                  "suggestion",
+                  serverName(x.name),
+                  used.mcp[x.name] ?? 0,
+                  x.tokens ? fmtTokens(x.tokens) : `${x.tools}`,
+                ),
               ),
-            ),
-          mcpList.length - chipLimit,
-        )}
-        {group(
-          "g-plugins",
-          "puzzle",
-          "claude",
-          T.groupPlugins,
-          pluginList.length,
-          pluginList.filter((x) => pluginCalls(x.name)).length,
-          pluginList
-            .slice(0, chipLimit)
-            .map((x) =>
-              chip(
-                `p-${x.name}`,
-                "puzzle",
-                "claude",
-                x.name,
-                pluginCalls(x.name),
-                `${x.commands}`,
+            mcpList.length - chipLimit,
+          ),
+          group(
+            "g-plugins",
+            "puzzle",
+            "claude",
+            T.groupPlugins,
+            pluginList.length,
+            pluginList.filter((x) => pluginCalls(x.name)).length,
+            pluginList
+              .slice(0, chipLimit)
+              .map((x) =>
+                chip(
+                  `p-${x.name}`,
+                  "puzzle",
+                  "claude",
+                  x.name,
+                  pluginCalls(x.name),
+                  `${x.commands}`,
+                ),
               ),
-            ),
-          pluginList.length - chipLimit,
-        )}
-        {group(
-          "g-skills",
-          "zap",
-          "merged",
-          isCompact ? T.groupSkillsShort : T.groupSkills,
-          skillList.length,
-          skillList.filter((x) => used.skills[x.name]).length,
-          skillList
-            .slice(0, chipLimit)
-            .map((x) =>
-              chip(
-                `s-${x.name}`,
-                "zap",
-                "merged",
-                x.name,
-                used.skills[x.name] ?? 0,
+            pluginList.length - chipLimit,
+          ),
+          group(
+            "g-skills",
+            "zap",
+            "merged",
+            isNarrow ? T.groupSkillsShort : T.groupSkills,
+            skillList.length,
+            skillList.filter((x) => used.skills[x.name]).length,
+            skillList
+              .slice(0, chipLimit)
+              .map((x) =>
+                chip(
+                  `s-${x.name}`,
+                  "zap",
+                  "merged",
+                  x.name,
+                  used.skills[x.name] ?? 0,
+                ),
               ),
-            ),
-          skillList.length - chipLimit,
-        )}
-      </Box>
-    );
+            skillList.length - chipLimit,
+          ),
+        ];
 
-    // ── Achievements ─────────────────────────────────────────────────────
-    const stats = statsOfRecord(lifeRec);
+    // ── Achievements and the profile ─────────────────────────────────────
+    const achStats = statsOfRecord(lifeRec);
     const haveIds = have.map((x) => x.id);
-    const next = nextAchievement(stats, haveIds);
-    const achCols = gridCols(20);
-    const achBody = (
-      <Box flexDirection="column" rowGap={space.inner}>
+    const next = nextAchievement(achStats, haveIds);
+    const achCols = gridCols(22);
+    const shortBar = Math.max(10, Math.min(24, inner - 30));
+    const levelSection = section(
+      "level",
+      "trophy",
+      T.level(lv.level),
+      "warning",
+      <Box flexDirection="column">
         <Box flexDirection="row" alignItems="center" columnGap={1}>
-          {progress(
-            (have.length / ACHIEVEMENTS.length) * 100,
-            "warning",
-            Math.max(10, Math.min(30, pairWidth - frame - 10)),
-          )}
-          <Text bold>
-            {have.length} / {ACHIEVEMENTS.length}
-          </Text>
+          {progress(lv.progress, "claude", shortBar)}
+          <Text dimColor>{T.toNext(500 - (lv.xp % 500), lv.level + 1)}</Text>
         </Box>
-        {next
-          ? (() => {
-              const [cur, goal] = next.progress(stats);
-              return line(
-                "next",
-                live("pulse", "warning", 12),
-                <Text wrap="truncate-end">
-                  <Text dimColor>{T.next}</Text>
-                  <Text bold>{(T.ach[next.id] ?? next).title}</Text>
-                  <Text dimColor>
-                    {` — ${(T.ach[next.id] ?? next).hint} (${Math.min(cur, goal)}/${goal})`}
-                  </Text>
-                </Text>,
-              );
-            })()
-          : line(
-              "all",
-              icon("trophy", "warning"),
-              <Text color="warning">{T.allUnlocked}</Text>,
-            )}
         {line(
           "life",
           icon("calendar", "inactive", 12),
@@ -2267,13 +2421,57 @@ export const register: Register = (on, options) => {
             )}
           </Text>,
         )}
+      </Box>,
+      "100%",
+      <Text dimColor>
+        {lv.xp} XP{sessionXp ? ` · ${T.sessionGain(sessionXp)}` : ""}
+      </Text>,
+    );
+    const achSection = section(
+      "ach",
+      "medal",
+      T.secAchievements,
+      "warning",
+      <Box flexDirection="column" rowGap={space.gapY}>
+        <Box flexDirection="column">
+          <Box flexDirection="row" alignItems="center" columnGap={1}>
+            {progress(
+              (have.length / ACHIEVEMENTS.length) * 100,
+              "warning",
+              shortBar,
+            )}
+            <Text bold>
+              {have.length} / {ACHIEVEMENTS.length}
+            </Text>
+          </Box>
+          {next
+            ? (() => {
+                const [cur, goal] = next.progress(achStats);
+                return line(
+                  "next",
+                  icon("flame", "warning", 12),
+                  <Text wrap="truncate-end">
+                    <Text dimColor>{T.next}</Text>
+                    <Text bold>{(T.ach[next.id] ?? next).title}</Text>
+                    <Text dimColor>
+                      {` — ${(T.ach[next.id] ?? next).hint} (${Math.min(cur, goal)}/${goal})`}
+                    </Text>
+                  </Text>,
+                );
+              })()
+            : line(
+                "all",
+                icon("trophy", "warning", 12),
+                <Text color="warning">{T.allUnlocked}</Text>,
+              )}
+        </Box>
         {grid(
           "ach-grid",
           ACHIEVEMENTS.map((a) => {
             const got = haveIds.includes(a.id);
-            const [cur, goal] = a.progress(stats);
+            const [cur, goal] = a.progress(achStats);
             const at = have.find((x) => x.id === a.id)?.at ?? 0;
-            const isFresh = got && now - at < 10_000;
+            const isFresh = got && now - at < FRESH_UNLOCK_MS;
             return cell(
               `a-${a.id}`,
               got ? "medal" : "lock",
@@ -2285,358 +2483,16 @@ export const register: Register = (on, options) => {
                   ? T.fresh
                   : "✓"
                 : `${Math.min(cur, goal)}/${goal}`,
-              isFresh ? live("pulse", "warning", 12) : undefined,
             );
           }),
           achCols,
+          0,
         )}
-      </Box>
-    );
-
-    const row = (key: string, children: RenderNode[]) => (
-      <Box
-        key={key}
-        flexDirection={isCompact ? "column" : "row"}
-        columnGap={gutter}
-        rowGap={space.stack}
-      >
-        {children}
-      </Box>
-    );
-    const colW = isCompact ? "100%" : "col";
-    const pairW = colW;
-
-    const bossSection = section(
-      "boss",
-      "crown",
-      T.secMain,
-      "claude",
-      bossBody,
-      layout === "medium" ? pairW : colW,
-    );
-    const resSection = section(
-      "res",
-      "gauge",
-      T.secLimits,
-      "suggestion",
-      resBody,
-      layout === "medium" ? pairW : colW,
-      <Text dimColor>{T.remaining}</Text>,
-    );
-    const guardSection = section(
-      "guard",
-      "shield",
-      T.secGuard,
-      guardColor,
-      guardBody,
-      layout === "wide" ? colW : "100%",
-    );
-    const partySection = section(
-      "party",
-      "users",
-      T.secSquad,
-      "warning",
-      partyBody,
+      </Box>,
       "100%",
-      running.length > 0 ? (
-        <Text dimColor>{modelMix}</Text>
-      ) : (
-        <Text dimColor>0</Text>
-      ),
-    );
-    const doneSection = section(
-      "done",
-      "trophy",
-      T.secDone,
-      "success",
-      doneBody,
-      pairW,
-      <Text dimColor>
-        {won} ✓{lost ? ` · ${lost} ✗` : ""}
-      </Text>,
-    );
-    const logSection = section(
-      "log",
-      "list",
-      T.secLog,
-      "inactive",
-      logBody,
-      pairW,
-    );
-    const hotTotal =
-      Object.keys(used.mcp).length + Object.keys(used.skills).length;
-    const arsenalSection = section(
-      "arsenal",
-      "swords",
-      T.secArsenal,
-      "suggestion",
-      arsenalBody,
-      "100%",
-      <Text dimColor>
-        {hotTotal ? T.inUse(hotTotal) : isCompact ? "" : T.litHint}
-      </Text>,
-    );
-    const achSection = section(
-      "ach",
-      "medal",
-      T.secAchievements,
-      "warning",
-      achBody,
-      "100%",
-      <Text dimColor>{isCompact ? "" : T.xpEach}</Text>,
+      isNarrow ? undefined : <Text dimColor>{T.xpEach}</Text>,
     );
 
-    // ── Context: what the window is made of ─────────────────────────────
-    const ctxWidth = Math.max(
-      8,
-      Math.min(isCompact ? 60 : 90, inner - frame - 1),
-    );
-    const usedRows = (parts?.rows ?? [])
-      .filter((r) => r.kind === "used" && r.tokens > 0)
-      .sort((a, b) => b.tokens - a.tokens);
-    const reserve = (parts?.rows ?? []).find((r) => r.kind === "buffer");
-    const freeRow = (parts?.rows ?? []).find((r) => r.kind === "free");
-    const deferred = (parts?.rows ?? []).filter(
-      (r) => r.kind === "deferred" && r.tokens > 0,
-    );
-    const windowMax = parts?.max || m?.contextWindow || 0;
-    const pctOf = (t: number) => (windowMax > 0 ? (t / windowMax) * 100 : 0);
-    const colored = [
-      ...usedRows.map((r, i) => ({
-        row: r,
-        color: PART_COLORS[i % PART_COLORS.length] ?? "claude",
-      })),
-      ...(reserve && reserve.tokens > 0
-        ? [{ row: reserve, color: "inactive" }]
-        : []),
-    ];
-    const stacked = Svg ? (
-      <Svg
-        source={stackedSvg(
-          colored.map((c) => ({
-            percent: pctOf(c.row.tokens),
-            color: c.color,
-          })),
-        )}
-        alt={T.compositionAlt}
-        width={ctxWidth * 9}
-        height={10}
-      />
-    ) : (
-      (() => {
-        const cells = splitCells(
-          colored.map((c) => pctOf(c.row.tokens)),
-          ctxWidth,
-        );
-        const used = cells.reduce((a, b) => a + b, 0);
-        return (
-          <Text>
-            {colored.map((c, i) => (
-              <Text key={`seg-${i}`} color={c.color}>
-                {"█".repeat(cells[i] ?? 0)}
-              </Text>
-            ))}
-            <Text dimColor>{"░".repeat(Math.max(0, ctxWidth - used))}</Text>
-          </Text>
-        );
-      })()
-    );
-    const legendRow = (
-      key: string,
-      color: string,
-      name: string,
-      tokens: number,
-      dim = false,
-    ) => (
-      <Box
-        key={key}
-        flexDirection="row"
-        justifyContent="space-between"
-        columnGap={1}
-      >
-        <Box
-          flexDirection="row"
-          alignItems="center"
-          columnGap={1}
-          flexShrink={1}
-          minWidth={0}
-        >
-          <Text color={color}>●</Text>
-          <Text dimColor={dim} wrap="truncate-end">
-            {name}
-          </Text>
-        </Box>
-        <Box flexShrink={0}>
-          <Text dimColor={dim}>
-            <Text bold={!dim}>{fmtTokens(tokens)}</Text>
-            {isCompact ? null : (
-              <Text dimColor> · {pctOf(tokens).toFixed(1)}%</Text>
-            )}
-          </Text>
-        </Box>
-      </Box>
-    );
-    const usedTotal = usedRows.reduce((a, r) => a + r.tokens, 0);
-    const compositionBody = !parts ? (
-      <Text dimColor>{T.collectingBreakdown}</Text>
-    ) : (
-      <Box flexDirection="column" rowGap={space.inner}>
-        <Text>
-          <Text bold>
-            {T.usedOf(
-              fmtTokens(usedTotal),
-              fmtTokens(windowMax),
-              pctOf(usedTotal).toFixed(0),
-            )}
-          </Text>
-          {freeRow ? (
-            <Text dimColor>{T.freeOf(fmtTokens(freeRow.tokens))}</Text>
-          ) : null}
-        </Text>
-        {stacked}
-        <Box flexDirection="column">
-          {colored.map((c, i) =>
-            legendRow(`lg-${i}`, c.color, c.row.name, c.row.tokens),
-          )}
-          {deferred.map((r, i) =>
-            legendRow(
-              `df-${i}`,
-              "inactive",
-              T.onDemand(r.name),
-              r.tokens,
-              true,
-            ),
-          )}
-        </Box>
-      </Box>
-    );
-    const topList = (
-      key: string,
-      items: { name: string; tokens: number }[],
-      empty: string,
-    ) =>
-      items.length === 0 ? (
-        <Text dimColor>{empty}</Text>
-      ) : (
-        <Box key={key} flexDirection="column">
-          {items.slice(0, 6).map((x, i) => (
-            <Box
-              key={`${key}-${i}`}
-              flexDirection="row"
-              justifyContent="space-between"
-              columnGap={1}
-            >
-              <Text wrap="truncate-start">{x.name}</Text>
-              <Box flexShrink={0}>
-                <Text dimColor>{fmtTokens(x.tokens)}</Text>
-              </Box>
-            </Box>
-          ))}
-        </Box>
-      );
-    const mcpWeight = [...(parts?.mcp ?? [])]
-      .sort((a, b) => b.tokens - a.tokens)
-      .map((x) => ({ name: x.label, tokens: x.tokens }));
-    const memoryWeight = [...(parts?.memory ?? [])]
-      .sort((a, b) => b.tokens - a.tokens)
-      .map((x) => ({
-        name: shortPath(x.path, Math.max(16, pairWidth - frame - 8)),
-        tokens: x.tokens,
-      }));
-    const compositionSection = section(
-      "composition",
-      "layers",
-      isCompact ? T.secCompositionShort : T.secComposition,
-      "merged",
-      compositionBody,
-      "100%",
-      parts && !isCompact ? (
-        <Text dimColor>{T.updated(fmtClock(parts.at))}</Text>
-      ) : undefined,
-    );
-    const mcpWeightSection = section(
-      "mcp-weight",
-      "plug",
-      T.secMcpWeight,
-      "suggestion",
-      topList("mw", mcpWeight, T.noMcp),
-      colW,
-      mcpWeight.length ? (
-        <Text dimColor>
-          {fmtTokens(mcpWeight.reduce((a, x) => a + x.tokens, 0))}
-        </Text>
-      ) : undefined,
-    );
-    const memorySection = section(
-      "memory",
-      "file",
-      T.secMemory,
-      "claude",
-      topList("mf", memoryWeight, T.noMemory),
-      colW,
-      memoryWeight.length ? (
-        <Text dimColor>
-          {fmtTokens(memoryWeight.reduce((a, x) => a + x.tokens, 0))}
-        </Text>
-      ) : undefined,
-    );
-
-    // ── Celebration banner ───────────────────────────────────────────────
-    const isParty = party !== null && now - party.at < CELEBRATE_MS;
-    const partyIds = party?.ids ?? [];
-    const firstAch = T.ach[partyIds[0] ?? ""];
-    const partyTitle =
-      party?.kind === "level"
-        ? T.level(party.level ?? lv.level)
-        : firstAch
-          ? partyIds.length > 1
-            ? T.andMore(firstAch.title, partyIds.length - 1)
-            : firstAch.title
-          : "";
-    const partyNote =
-      party?.kind === "level" ? T.newLevelNote : (firstAch?.hint ?? "");
-    const partyColor = party?.kind === "level" ? "claude" : "warning";
-    const banner =
-      isParty && party ? (
-        <Box
-          key="banner"
-          flexDirection="row"
-          alignItems="center"
-          columnGap={space.gap}
-          borderStyle="round"
-          borderColor={partyColor}
-          paddingX={space.padX}
-        >
-          {Svg && anim && takeFrame() ? (
-            <Svg
-              source={burstSvg(partyColor)}
-              alt={T.celebrationAlt}
-              width={isCompact ? 32 : 44}
-              height={isCompact ? 29 : 40}
-              isInteractive
-            />
-          ) : (
-            <Text bold color={partyColor}>
-              {Math.floor(now / 500) % 2 ? "✦" : "✧"}
-            </Text>
-          )}
-          <Box flexDirection="column" flexShrink={1} minWidth={0}>
-            <Text dimColor>
-              {party.kind === "level" ? T.bannerLevel : T.bannerAch}
-            </Text>
-            <Text bold color={partyColor} wrap="truncate-end">
-              {partyTitle}
-            </Text>
-            {isCompact ? null : (
-              <Text dimColor wrap="truncate-end">
-                {partyNote}
-              </Text>
-            )}
-          </Box>
-        </Box>
-      ) : null;
-
-    // ── Tabs ─────────────────────────────────────────────────────────────
     // ── Language switcher: a native list where the surface draws one, a cycling button on the terminal.
     const setLang = async (id: Lang) => {
       await update($, langPick, () => id);
@@ -2668,21 +2524,308 @@ export const register: Register = (on, options) => {
         }}
       />
     );
+    const langRow = line("lang-row", icon("globe", "inactive", 13), [
+      <Text key="l" dimColor>
+        {T.language}
+      </Text>,
+      langSwitch,
+    ]);
 
+    // ── Context: what the window is made of ─────────────────────────────
+    const ctxWidth = Math.max(8, Math.min(isNarrow ? 60 : 90, inner - 1));
+    const usedRows = (parts?.rows ?? [])
+      .filter((r) => r.kind === "used" && r.tokens > 0)
+      .sort((a, b) => b.tokens - a.tokens);
+    const reserve = (parts?.rows ?? []).find((r) => r.kind === "buffer");
+    const freeRow = (parts?.rows ?? []).find((r) => r.kind === "free");
+    const deferred = (parts?.rows ?? []).filter(
+      (r) => r.kind === "deferred" && r.tokens > 0,
+    );
+    const windowMax = parts?.max || m?.contextWindow || 0;
+    const pctOf = (t: number) => (windowMax > 0 ? (t / windowMax) * 100 : 0);
+    const colored = [
+      ...usedRows.map((r, i) => ({
+        row: r,
+        color: PART_COLORS[i % PART_COLORS.length] ?? "claude",
+      })),
+      ...(reserve && reserve.tokens > 0
+        ? [{ row: reserve, color: "inactive" }]
+        : []),
+    ];
+    const stacked = Svg ? (
+      <Svg
+        key="stacked"
+        source={stackedSvg(
+          colored.map((c) => ({
+            percent: pctOf(c.row.tokens),
+            color: c.color,
+          })),
+        )}
+        alt={T.compositionAlt}
+        width={ctxWidth * CELL_PX}
+        height={10}
+      />
+    ) : (
+      (() => {
+        const cells = splitCells(
+          colored.map((c) => pctOf(c.row.tokens)),
+          ctxWidth,
+        );
+        const used = cells.reduce((a, b) => a + b, 0);
+        return (
+          <Text key="stacked">
+            {colored.map((c, i) => (
+              <Text key={`seg-${i}`} color={c.color}>
+                {"█".repeat(cells[i] ?? 0)}
+              </Text>
+            ))}
+            <Text dimColor>{"░".repeat(Math.max(0, ctxWidth - used))}</Text>
+          </Text>
+        );
+      })()
+    );
+    const legendRow = (
+      key: string,
+      color: string,
+      name: string,
+      tokens: number,
+      dim = false,
+    ) => (
+      <Box
+        key={key}
+        flexDirection="row"
+        justifyContent="space-between"
+        columnGap={1}
+        minWidth={0}
+      >
+        {line(
+          "n",
+          <Text color={color}>●</Text>,
+          <Text dimColor={dim} wrap="truncate-end">
+            {name}
+          </Text>,
+        )}
+        <Box flexShrink={0}>
+          <Text dimColor={dim}>
+            <Text bold={!dim}>{fmtTokens(tokens)}</Text>
+            {isNarrow ? null : (
+              <Text dimColor> · {pctOf(tokens).toFixed(1)}%</Text>
+            )}
+          </Text>
+        </Box>
+      </Box>
+    );
+    const usedTotal = usedRows.reduce((a, r) => a + r.tokens, 0);
+    const compositionSection = section(
+      "composition",
+      "layers",
+      isNarrow ? T.secCompositionShort : T.secComposition,
+      "merged",
+      !parts ? (
+        <Text dimColor>{T.collectingBreakdown}</Text>
+      ) : (
+        <Box flexDirection="column" rowGap={space.gapY}>
+          <Text>
+            <Text bold>
+              {T.usedOf(
+                fmtTokens(usedTotal),
+                fmtTokens(windowMax),
+                pctOf(usedTotal).toFixed(0),
+              )}
+            </Text>
+            {freeRow ? (
+              <Text dimColor>{T.freeOf(fmtTokens(freeRow.tokens))}</Text>
+            ) : null}
+          </Text>
+          {stacked}
+          <Box flexDirection="column">
+            {colored.map((c, i) =>
+              legendRow(`lg-${i}`, c.color, c.row.name, c.row.tokens),
+            )}
+            {deferred.map((r, i) =>
+              legendRow(
+                `df-${i}`,
+                "inactive",
+                T.onDemand(r.name),
+                r.tokens,
+                true,
+              ),
+            )}
+          </Box>
+        </Box>
+      ),
+      "100%",
+      parts && !isNarrow ? (
+        <Text dimColor>{T.updated(fmtClock(parts.at))}</Text>
+      ) : undefined,
+    );
+    const topList = (
+      key: string,
+      items: { name: string; tokens: number }[],
+      empty: string,
+    ) =>
+      items.length === 0 ? (
+        <Text dimColor>{empty}</Text>
+      ) : (
+        <Box key={key} flexDirection="column">
+          {items.slice(0, 6).map((x, i) => (
+            <Box
+              key={`${key}-${i}`}
+              flexDirection="row"
+              justifyContent="space-between"
+              columnGap={1}
+              minWidth={0}
+            >
+              <Text wrap="truncate-start">{x.name}</Text>
+              <Box flexShrink={0}>
+                <Text dimColor>{fmtTokens(x.tokens)}</Text>
+              </Box>
+            </Box>
+          ))}
+        </Box>
+      );
+    const mcpWeight = [...(parts?.mcp ?? [])]
+      .sort((a, b) => b.tokens - a.tokens)
+      .map((x) => ({ name: x.label, tokens: x.tokens }));
+    const memoryWeight = [...(parts?.memory ?? [])]
+      .sort((a, b) => b.tokens - a.tokens)
+      .map((x) => ({
+        name: shortPath(x.path, Math.max(16, half - 8)),
+        tokens: x.tokens,
+      }));
+    const mcpWeightSection = section(
+      "mcp-weight",
+      "plug",
+      T.secMcpWeight,
+      "suggestion",
+      topList("mw", mcpWeight, T.noMcp),
+      colW,
+      mcpWeight.length ? (
+        <Text dimColor>
+          {fmtTokens(mcpWeight.reduce((a, x) => a + x.tokens, 0))}
+        </Text>
+      ) : undefined,
+    );
+    const memorySection = section(
+      "memory",
+      "file",
+      T.secMemory,
+      "claude",
+      topList("mf", memoryWeight, T.noMemory),
+      colW,
+      memoryWeight.length ? (
+        <Text dimColor>
+          {fmtTokens(memoryWeight.reduce((a, x) => a + x.tokens, 0))}
+        </Text>
+      ) : undefined,
+    );
+    const snapText = snap
+      ? `${fmtClock(snap.at)} · ${snap.path.replace(/^.*\/\.claude\//, "~/.claude/")}`
+      : T.snapNone;
+    const guardSection = section(
+      "guard",
+      "shield",
+      T.secGuard,
+      guardColor,
+      <Box flexDirection="column">
+        {guardLine}
+        {line(
+          "snap",
+          icon("save", "inactive", 13),
+          <Text dimColor wrap="truncate-start">
+            {T.snapshot(snapText)}
+          </Text>,
+        )}
+        {snap ? (
+          <Box flexDirection="row">
+            <Button
+              key="copy"
+              label={isNarrow ? T.btnCopyShort : T.btnCopy}
+              variant="secondary"
+              onPress={async () => {
+                const r = await $.ui.copy({
+                  text: T.resume(snap.path),
+                  surface: e.surface,
+                });
+                $.ui.toast(r.isCopied ? T.copied : T.copyFailed);
+              }}
+            />
+          </Box>
+        ) : null}
+      </Box>,
+    );
+
+    // ── Celebration banner ───────────────────────────────────────────────
+    const isParty = party !== null && now - party.at < CELEBRATE_MS;
+    const partyIds = party?.ids ?? [];
+    const firstAch = T.ach[partyIds[0] ?? ""];
+    const partyTitle =
+      party?.kind === "level"
+        ? T.level(party.level ?? lv.level)
+        : firstAch
+          ? partyIds.length > 1
+            ? T.andMore(firstAch.title, partyIds.length - 1)
+            : firstAch.title
+          : "";
+    const partyNote =
+      party?.kind === "level" ? T.newLevelNote : (firstAch?.hint ?? "");
+    const partyColor = party?.kind === "level" ? "claude" : "warning";
+    const banner =
+      isParty && party ? (
+        <Box
+          key="banner"
+          flexDirection="row"
+          alignItems="center"
+          columnGap={space.gapX}
+          borderStyle="round"
+          borderColor={partyColor}
+          paddingX={space.cardX}
+        >
+          {Svg ? (
+            <Svg
+              key="burst"
+              source={burstSvg(partyColor)}
+              alt={T.celebrationAlt}
+              width={32}
+              height={29}
+              isInteractive={anim ? true : undefined}
+            />
+          ) : (
+            <Text bold color={partyColor}>
+              ✦
+            </Text>
+          )}
+          <Box flexDirection="column" flexShrink={1} minWidth={0}>
+            <Text dimColor>
+              {party.kind === "level" ? T.bannerLevel : T.bannerAch}
+            </Text>
+            <Text bold color={partyColor} wrap="truncate-end">
+              {partyTitle}
+            </Text>
+            {isNarrow ? null : (
+              <Text dimColor wrap="truncate-end">
+                {partyNote}
+              </Text>
+            )}
+          </Box>
+        </Box>
+      ) : null;
+
+    // ── Tabs ─────────────────────────────────────────────────────────────
     const tabBar = (
       <Box
         key="tabs"
         flexDirection="row"
         flexWrap="wrap"
-        columnGap={isCompact ? 2 : 1}
+        columnGap={1}
         rowGap={0}
       >
         {shownTabs.map((t, i) => (
           <Button
             key={`tab-${t.id}`}
             label={
-              isCompact
-                ? t.id === current
+              isNarrow
+                ? t.id === current && !focused
                   ? `● ${t.label}`
                   : t.label
                 : t.id === "achievements"
@@ -2691,47 +2834,48 @@ export const register: Register = (on, options) => {
                     ? `${t.label} · ${running.length}`
                     : t.label
             }
-            hotkey={isCompact ? undefined : String(i + 1)}
-            plain={isCompact ? true : undefined}
-            variant={t.id === current ? "primary" : "secondary"}
-            dimColor={t.id !== current}
+            hotkey={isNarrow ? undefined : String(i + 1)}
+            plain={isNarrow ? true : undefined}
+            variant={t.id === current && !focused ? "primary" : "secondary"}
+            dimColor={t.id !== current || Boolean(focused)}
             onPress={async () => {
+              await update($, focus, () => null);
               await update($, tab, () => t.id);
               await writeProfile($, (p) => ({ ...p, tab: t.id }));
             }}
           />
         ))}
-        {langSwitch}
       </Box>
     );
 
-    const page: RenderChildren =
-      current === "context"
+    const page: RenderChildren = focused
+      ? agentPage(focused)
+      : current === "context"
         ? [
             compositionSection,
             row("ctx-lists", [mcpWeightSection, memorySection]),
             guardSection,
           ]
         : current === "arsenal"
-          ? [arsenalSection]
+          ? arsenalPage
           : current === "achievements"
-            ? [achSection]
+            ? [levelSection, achSection, langRow]
             : current === "log"
               ? [row("bottom", [doneSection, logSection])]
               : [
-                  tiles,
-                  layout === "wide"
-                    ? row("top", [bossSection, resSection, guardSection])
-                    : [row("top", [bossSection, resSection]), guardSection],
-                  partySection,
+                  stats,
+                  squadSection,
+                  isPaired && recentSection
+                    ? row("lower", [limitsSection, recentSection])
+                    : [limitsSection, recentSection],
                 ];
 
     return (
       <Box
         flexDirection="column"
         paddingX={space.outerX}
-        paddingY={space.padY}
-        rowGap={space.stack}
+        paddingY={space.outerY}
+        rowGap={space.gapY}
       >
         {header}
         {banner}

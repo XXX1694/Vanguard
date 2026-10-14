@@ -3,6 +3,7 @@ import { describe, expect, mock, test } from "claude-code/testing";
 import {
   bar,
   contextLevel,
+  fmtAge,
   fmtDuration,
   handoffMarkdown,
   effortDots,
@@ -17,9 +18,7 @@ import {
   successStreak,
   newlyUnlocked,
   nextAchievement,
-  sparkline,
   etaToFull,
-  pulseBar,
   mcpServer,
   serverLabel,
   orchestratorRules,
@@ -73,6 +72,9 @@ describe("helpers", () => {
       "1м05с",
     );
     expect(fmtDuration(3_720_000)).toBe("1h02m");
+    expect(fmtAge(30_000)).toBe("<1m");
+    expect(fmtAge(125_000)).toBe("2m");
+    expect(fmtAge(3_720_000)).toBe("1h02m");
     expect(level(5, 0).level).toBe(2);
   });
 
@@ -146,9 +148,7 @@ for (const surface of ["terminal", "desktop"] as const) {
       expect(
         await pane.find({ type: "Text", text: "Recon the repo" }),
       ).toBeDefined();
-      expect(
-        await pane.find({ type: "Text", text: "Субагенты в работе" }),
-      ).toBeDefined();
+      expect(await pane.find({ type: "Text", text: "Отряд" })).toBeDefined();
       expect(
         await pane.find({ type: "Button", text: "Сжать и сохранить" }),
       ).toBeDefined();
@@ -162,6 +162,63 @@ for (const surface of ["terminal", "desktop"] as const) {
       expect(
         await band.find({ type: "Text", text: "1 агент в работе" }),
       ).toBeDefined();
+    },
+  );
+}
+
+for (const surface of ["terminal", "desktop"] as const) {
+  test(
+    `a subagent's card opens its page: brief, trail and report (${surface})`,
+    RU,
+    async ($, on) => {
+      mock.clock(on);
+      on("agent.spawn", () => ({
+        model: "claude-haiku-5-5",
+        agentId: "agent-1",
+      }));
+      on("tool.call", () => ({ result: "ok" }) as never);
+      on("turn.complete", () => ({ text: "" }) as never);
+      await $.agent.spawn({
+        prompt: "Find where the pane is drawn",
+        description: "Map the pane",
+        subagentType: "vanguard:scout",
+      } as never);
+      await $.tool.call({
+        tool: "Read",
+        file_path: "/repo/hooks/register.tsx",
+        agentId: "agent-1",
+      } as never);
+
+      const pane = await $.ui.mount({
+        plugin: "vanguard",
+        surface,
+        component: "Pane",
+        props: PANE_PROPS,
+        requestId: "vanguard",
+      });
+      expect(
+        await pane.find({ type: "Text", text: "Разведчик" }),
+      ).toBeDefined();
+      expect(await pane.find({ type: "Text", text: "Читает" })).toBeDefined();
+
+      await pane.press({ key: "open-agent-1" });
+      expect(await pane.find({ type: "Text", text: "Задача" })).toBeDefined();
+      expect(await pane.find({ type: "Text", text: "Read" })).toBeDefined();
+      expect(await pane.find({ key: "back" })).toBeDefined();
+
+      await $.turn.complete({
+        agentId: "agent-1",
+        reason: "answer",
+        answer: "The pane lives in register.tsx",
+        durationMs: 1000,
+        isAborted: false,
+        turnId: "t1",
+      } as never);
+      expect(await pane.find({ type: "Text", text: "Отчёт" })).toBeDefined();
+
+      await pane.press({ key: "tab-log" });
+      expect(await pane.find({ key: "back" })).toBeUndefined();
+      expect(await pane.find({ key: "open-agent-1" })).toBeDefined();
     },
   );
 }
@@ -229,7 +286,6 @@ describe("mechanics", () => {
     ]);
     expect(newlyUnlocked(stats, ["first", "squad"])).toEqual([]);
     expect(nextAchievement(stats, ["first", "squad"])).toBeDefined();
-    expect(sparkline([0, 50, 100], 3)).toBe("▁▅█");
     expect(
       etaToFull(
         [
@@ -239,7 +295,6 @@ describe("mechanics", () => {
         600_000,
       ),
     ).toBe(600_000 + 80 * 60_000);
-    expect(pulseBar(0, 6)).toHaveLength(6);
     expect(mcpServer("mcp__github__create_pr")).toBe("github");
     expect(serverLabel("claude_ai_Gmail")).toBe("Gmail");
   });
@@ -364,7 +419,7 @@ function startHooks(on: any, id: string) {
 }
 
 test(
-  "an old store profile moves into the shared file, and a section folds",
+  "an old store profile moves into the shared file, and the main agent has a page",
   RU,
   async ($, on) => {
     mock.clock(on);
@@ -408,16 +463,18 @@ test(
         text: "Сейчас нет запущенных субагентов",
       }),
     ).toBeDefined();
-    await pane.press({ key: "fold-party" });
+    await pane.press({ key: "open-main" });
+    expect(await pane.find({ type: "Text", text: "Ход работы" })).toBeDefined();
+    expect(
+      await pane.find({ type: "Text", text: "Ждёт вашего сообщения" }),
+    ).toBeDefined();
+    await pane.press({ key: "back" });
     expect(
       await pane.find({
         type: "Text",
         text: "Сейчас нет запущенных субагентов",
       }),
-    ).toBeUndefined();
-    expect(JSON.parse(files[PROFILE] ?? "{}").collapsed).toEqual({
-      party: true,
-    });
+    ).toBeDefined();
   },
 );
 
@@ -588,7 +645,7 @@ for (const surface of ["terminal", "desktop"] as const) {
 }
 
 test(
-  "an unlock raises a banner, and animations stay within the frame budget",
+  "an unlock raises a banner, and portraits stay within the frame budget",
   RU,
   async ($, on) => {
     mock.clock(on);
@@ -614,7 +671,8 @@ test(
     const svgs = await pane.findAll({ type: "Svg" });
     const live = svgs.filter((x: any) => x.props?.isInteractive === true);
     expect(live.length).toBeGreaterThan(0);
-    expect(live.length).toBeLessThanOrEqual(8);
+    // 13 portraits (the main agent and the first 12 on the stage) and the banner's burst
+    expect(live.length).toBeLessThanOrEqual(14);
   },
 );
 
@@ -688,12 +746,11 @@ for (const surface of ["terminal", "desktop"] as const) {
         props: { ...PANE_PROPS, bodyColumns: 150 },
         requestId: "vanguard",
       });
-      expect(
-        await pane.find({ type: "Text", text: "Subagents at work" }),
-      ).toBeDefined();
+      expect(await pane.find({ type: "Text", text: "Squad" })).toBeDefined();
       expect(
         await pane.find({ type: "Text", text: "No subagents running" }),
       ).toBeDefined();
+      await pane.press({ key: "tab-achievements" });
       if (surface === "desktop") {
         await pane.select({ key: "lang", value: "zh" });
       } else {
@@ -701,9 +758,8 @@ for (const surface of ["terminal", "desktop"] as const) {
         await pane.press({ key: "lang" });
         await pane.press({ key: "lang" });
       }
-      expect(
-        await pane.find({ type: "Text", text: "工作中的子智能体" }),
-      ).toBeDefined();
+      await pane.press({ key: "tab-overview" });
+      expect(await pane.find({ type: "Text", text: "小队" })).toBeDefined();
     },
   );
 }
