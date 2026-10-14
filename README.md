@@ -5,7 +5,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-8B5CF6"></a>
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-D97757">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.1.0-3B82F6">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.2.0-3B82F6">
   <a href="https://github.com/XXX1694/Vanguard/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/XXX1694/Vanguard/actions/workflows/ci.yml/badge.svg"></a>
 </p>
 
@@ -42,13 +42,13 @@ Five tabs:
 
 | Tab | What it shows |
 | --- | --- |
-| **Overview** | Session time, subagents, tool calls per minute, agent tokens and spend per hour. The main agent's model, effort and current action. Rate limits with reset times and a forecast of when the 5-hour limit runs out. A context guard with a one-click compact and handoff. Live cards for every running subagent. |
+| **Overview** | One line of figures: session time, subagents, calls, agent tokens and spend. The squad: the main agent and every running subagent as a living character that shows its role and what it is doing right now. Click a name to open that agent's page with its task, its last tool calls, the tools it leaned on and the report it handed back. Rate limits with reset times and a forecast of when the 5-hour limit runs out, and a one-click compact and handoff. |
 | **Context** | What fills the context window, as `/context` counts it: system prompt, tools, skills, memory files, messages, the compaction reserve. Which MCP servers and CLAUDE.md files weigh the most. |
 | **Arsenal** | Your MCP servers, plugins and skills. Whatever you used this session lights up with a counter. |
-| **Achievements** | Eleven achievements, from *First sortie* to *Shell master*, with progress toward the next one. |
+| **Achievements** | Your level and XP, eleven achievements from *First sortie* to *Shell master* with progress toward the next one, and the language switcher. |
 | **Journal** | Finished agents and the session's events. |
 
-It works in the terminal and in the desktop app. The desktop gets vector icons, smooth progress bars and light animations. The terminal gets a compact glyph layout tuned for a narrow side column.
+It works in the terminal and in the desktop app. The desktop draws animated characters, vector icons and smooth progress bars. The terminal gets a compact glyph layout tuned for a narrow side column.
 
 ### Orchestrator
 
@@ -111,7 +111,7 @@ Open `/plugin`, choose **vanguard**, then **Configure**:
 | Language | auto | `auto` follows the system locale. The switcher in the pane overrides it. |
 | Orchestrator rules | on | Add the orchestration rules to the system prompt |
 | Open at start | on | Open the pane in every new session |
-| Animations | on | Spinners, pulses and the logo shimmer (desktop) |
+| Animations | on | Living squad characters (desktop) |
 | Achievement sound | on | A short chime on each unlock |
 | Context warning, % | 70 | When the context guard turns yellow |
 | Context critical, % | 85 | When it turns red and suggests a handoff |

@@ -2,6 +2,21 @@
 
 All notable changes to Vanguard are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-10-14
+
+### Added
+- The squad comes alive: the main agent and each subagent are drawn as characters, one per role (scout, architect, builder, reviewer, verifier, guide, fighter, commander), animated by what they are doing right now: reading, searching, editing, running a command, on the web, delegating, planning or thinking. A finished agent takes a bow on the stage before it moves to the list.
+- Agent pages: click an agent's name to see its task, its last tool calls, the tools it used most and the report it handed back. The main agent has a page too.
+
+### Changed
+- A calmer, steadier pane. It redraws only when something on screen changes (running times now tick by the minute), and portraits animate in their own frames, so nothing jumps.
+- One spacing scale and fluid columns, so the layout keeps its shape at any width and while the pane is resized. Frames are kept for the agent cards only.
+- The overview's five tiles became one line of figures; the main agent, the limits and the context guard moved into the squad and the limits section.
+- The language switcher moved to the Achievements tab, next to your level.
+
+### Removed
+- The running stripe on working agents, the spinners and pulses, the sparklines and the fold buttons on sections.
+
 ## [1.1.0] - 2026-10-09
 
 ### Added
@@ -25,5 +40,6 @@ All notable changes to Vanguard are listed here. The format follows [Keep a Chan
 - Lifetime profile with levels, XP and eleven achievements, shared across sessions and projects.
 - Settings for the orchestrator, opening at start, animations, sound, context thresholds and visible tabs.
 
+[1.2.0]: https://github.com/XXX1694/Vanguard/releases/tag/v1.2.0
 [1.1.0]: https://github.com/XXX1694/Vanguard/releases/tag/v1.1.0
 [1.0.0]: https://github.com/XXX1694/Vanguard/releases/tag/v1.0.0

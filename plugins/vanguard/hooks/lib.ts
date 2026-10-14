@@ -98,6 +98,17 @@ export function fmtDuration(ms: number, u: Units = EN_UNITS): string {
   return `${sec}${u.s}`;
 }
 
+/**
+ * A running length that changes once a minute: `<1m`, `4m`, `1h05m`, `2d3h`.
+ * The pane redraws on that minute, not every second.
+ */
+export function fmtAge(ms: number, u: Units = EN_UNITS): string {
+  if (ms < 60_000) return `<1${u.m}`;
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}${u.m}`;
+
+  return fmtDuration(ms, u);
+}
+
 export function fmtTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
@@ -195,10 +206,15 @@ export function fmtReset(
   return `${day} ${time}`;
 }
 
-const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
-export function spinnerFrame(now: number): string {
-  return SPINNER[Math.floor(now / 1000) % SPINNER.length] ?? "⠋";
+/**
+ * Model text made safe to draw: line breaks normalised, terminal escapes and
+ * other control characters (all but tab and newline) taken out.
+ */
+export function plainText(text: string): string {
+  return text
+    .replace(/\r\n?/g, "\n")
+    .replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, "")
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
 }
 
 export function clip(text: string, max: number): string {
@@ -300,38 +316,6 @@ export function plural(n: number, forms: [string, string, string]): string {
   return forms[2];
 }
 
-const SPARKS = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
-
-/** A sparkline of the last `width` values, scaled between `min` and `max`. */
-export function sparkline(
-  values: number[],
-  width: number,
-  min = 0,
-  max = 100,
-): string {
-  const tail = values.slice(-width);
-  const span = Math.max(1e-9, max - min);
-
-  return tail
-    .map((v) => {
-      const i = Math.round(
-        ((Math.min(max, Math.max(min, v)) - min) / span) * 7,
-      );
-      return SPARKS[i] ?? "▁";
-    })
-    .join("");
-}
-
-/** Dollars per hour over the session so far; undefined in its first minute. */
-export function burnPerHour(
-  usd: number | undefined,
-  elapsedMs: number,
-): number | undefined {
-  if (usd === undefined || elapsedMs < 60_000) return undefined;
-
-  return usd / (elapsedMs / 3_600_000);
-}
-
 /**
  * When a percentage reaches 100 at the pace of the last hour of readings;
  * undefined while it is flat, falling, or too little was read.
@@ -348,16 +332,6 @@ export function etaToFull(
   if (slope <= 0) return undefined;
 
   return now + (100 - last.value) / slope;
-}
-
-/** An indeterminate bar whose lit segment walks once per second: `▱▱▰▰▰▱▱▱`. */
-export function pulseBar(now: number, width: number): string {
-  const lit = Math.max(2, Math.floor(width / 3));
-  const pos = Math.floor(now / 1000) % (width + lit);
-
-  return Array.from({ length: width }, (_, i) =>
-    i >= pos - lit && i < pos ? "▰" : "▱",
-  ).join("");
 }
 
 /** Append a reading when it moved or a minute passed; keep the last 120. */

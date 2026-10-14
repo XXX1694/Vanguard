@@ -1,5 +1,8 @@
 export type HeroStatus = "running" | "done" | "failed" | "stopped";
 
+/** One tool call on an agent's page. */
+export type TrailStep = { at: number; tool: string; detail?: string };
+
 export type Hero = {
   id: string;
   title: string;
@@ -13,6 +16,13 @@ export type Hero = {
   lastAction?: string;
   lastDetail?: string;
   tokens?: number;
+  /** The task it was given, clipped. */
+  brief?: string;
+  /** Its last tool calls, oldest first. */
+  trail?: TrailStep[];
+  toolCounts?: Record<string, number>;
+  /** What it handed back, clipped. */
+  report?: string;
 };
 
 export type RateWindow = {
@@ -38,6 +48,9 @@ export type Commander = {
   lastAction?: string;
   lastDetail?: string;
   toolCounts?: Record<string, number>;
+  trail?: TrailStep[];
+  /** True between the main loop's first step of a turn and the turn's end. */
+  busy?: boolean;
   startedAt: number;
 };
 
@@ -160,6 +173,8 @@ declare module "claude-code" {
       levelSeen: number;
       /** The language picked in the pane; null follows the setting. */
       lang: string | null;
+      /** The agent whose page is open: its id, `main`, or null for the tabs. */
+      focus: string | null;
     };
   }
 }

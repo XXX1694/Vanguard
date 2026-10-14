@@ -158,35 +158,21 @@ export function iconSvg(name: IconName, color: string): string {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="${hexOf(color)}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${PATHS[name]}</svg>`;
 }
 
-/** The Vanguard mark. */
 /**
  * The Vanguard mark: two swords crossed over the ring of an arena floor, a
- * spark where the blades meet, on a Claude-orange to violet tile.
- * `idle` lets the spark breathe; `live` adds a light sweeping the tile and a
- * ring that ripples, for when agents are at work.
+ * spark where the blades meet, on a Claude-orange to violet tile. Still: the
+ * squad's portraits carry the motion.
  */
-export function logoSvg(mode: "static" | "idle" | "live" = "static"): string {
-  const anim = mode !== "static";
+export function logoSvg(): string {
   const sword = (flip: boolean) => {
     const t = flip ? ' transform="matrix(-1 0 0 1 32 0)"' : "";
     return `<g${t}><path d="M9.9 20.5 20.7 9.7l3-1.3-1.3 3L11.6 22.2z" fill="#fff"/><path d="M10.75 21.35 22.9 9.2" stroke="#E9DDFF" stroke-width=".6"/><path d="M7.9 19.2l4.9 4.9" stroke="#FFC978" stroke-width="2.6" stroke-linecap="round"/><path d="M10.1 22.1l-2.6 2.6" stroke="#F3B25F" stroke-width="2.3" stroke-linecap="round"/><circle cx="6.8" cy="25.4" r="1.6" fill="#FFC978"/></g>`;
   };
-  const sparkAnim = anim
-    ? `<animate attributeName="opacity" values="1;.55;1" dur="${mode === "live" ? "1.2s" : "3.2s"}" repeatCount="indefinite"/><animateTransform attributeName="transform" type="rotate" values="0 16 5.6;${mode === "live" ? 90 : 20} 16 5.6;0 16 5.6" dur="${mode === "live" ? "2.4s" : "6s"}" repeatCount="indefinite"/>`
-    : "";
-  const ringAnim =
-    mode === "live"
-      ? `<ellipse cx="16" cy="25.6" rx="10.5" ry="2.6" fill="none" stroke="#fff" stroke-width=".8"><animate attributeName="rx" values="10.5;13.5" dur="1.8s" repeatCount="indefinite"/><animate attributeName="ry" values="2.6;3.6" dur="1.8s" repeatCount="indefinite"/><animate attributeName="opacity" values=".6;0" dur="1.8s" repeatCount="indefinite"/></ellipse>`
-      : "";
-  const sweep =
-    mode === "live"
-      ? `<rect x="-16" y="-8" width="10" height="48" fill="url(#lgS)" transform="rotate(20)"><animate attributeName="x" values="-24;48" dur="2.6s" repeatCount="indefinite"/></rect>`
-      : "";
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><defs><linearGradient id="lgT" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FF8F57"/><stop offset=".5" stop-color="#D9467A"/><stop offset="1" stop-color="#5636D6"/></linearGradient><radialGradient id="lgH" cx=".28" cy=".18" r=".8"><stop offset="0" stop-color="#fff" stop-opacity=".35"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient><radialGradient id="lgF" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#1E0B45" stop-opacity=".7"/><stop offset="1" stop-color="#2A1450" stop-opacity="0"/></radialGradient><linearGradient id="lgS" x1="0" x2="1"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset=".5" stop-color="#fff" stop-opacity=".3"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient><clipPath id="lgC"><rect width="32" height="32" rx="9"/></clipPath></defs><g clip-path="url(#lgC)"><rect width="32" height="32" fill="url(#lgT)"/><rect width="32" height="32" fill="url(#lgH)"/><ellipse cx="16" cy="26.2" rx="12.5" ry="4.2" fill="url(#lgF)"/>${sweep}</g><rect x=".5" y=".5" width="31" height="31" rx="8.5" fill="none" stroke="#fff" stroke-opacity=".18"/><ellipse cx="16" cy="25.6" rx="10.5" ry="2.6" fill="none" stroke="#fff" stroke-opacity=".45" stroke-width="1.1"/>${ringAnim}${sword(false)}${sword(true)}<g><path d="M16 1.9l1.15 2.55 2.55 1.15-2.55 1.15L16 9.3l-1.15-2.55L12.3 5.6l2.55-1.15z" fill="#FFE08F"/>${sparkAnim}</g></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><defs><linearGradient id="lgT" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FF8F57"/><stop offset=".5" stop-color="#D9467A"/><stop offset="1" stop-color="#5636D6"/></linearGradient><radialGradient id="lgH" cx=".28" cy=".18" r=".8"><stop offset="0" stop-color="#fff" stop-opacity=".35"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient><radialGradient id="lgF" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#1E0B45" stop-opacity=".7"/><stop offset="1" stop-color="#2A1450" stop-opacity="0"/></radialGradient><clipPath id="lgC"><rect width="32" height="32" rx="9"/></clipPath></defs><g clip-path="url(#lgC)"><rect width="32" height="32" fill="url(#lgT)"/><rect width="32" height="32" fill="url(#lgH)"/><ellipse cx="16" cy="26.2" rx="12.5" ry="4.2" fill="url(#lgF)"/></g><rect x=".5" y=".5" width="31" height="31" rx="8.5" fill="none" stroke="#fff" stroke-opacity=".18"/><ellipse cx="16" cy="25.6" rx="10.5" ry="2.6" fill="none" stroke="#fff" stroke-opacity=".45" stroke-width="1.1"/>${sword(false)}${sword(true)}<path d="M16 1.9l1.15 2.55 2.55 1.15-2.55 1.15L16 9.3l-1.15-2.55L12.3 5.6l2.55-1.15z" fill="#FFE08F"/></svg>`;
 }
 
-export const LOGO_SVG = logoSvg("static");
+export const LOGO_SVG = logoSvg();
 
 /** Which icon a tool call is drawn with. */
 export function toolIcon(tool: string): IconName {
@@ -205,38 +191,6 @@ export function toolIcon(tool: string): IconName {
   return "wrench";
 }
 
-/** A ring whose arc, fading along its length, turns: drawn interactive, so its SMIL runs. */
-export function loaderSvg(color: string): string {
-  const c = hexOf(color);
-
-  return framed(
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke-width="2.8" stroke-linecap="round"><defs><linearGradient id="a" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${c}"/><stop offset="1" stop-color="${c}" stop-opacity="0"/></linearGradient></defs><circle cx="12" cy="12" r="9" stroke="${c}" opacity=".16"/><g><path d="M12 3a9 9 0 0 1 9 9" stroke="${c}"/><path d="M21 12a9 9 0 0 1-9 9" stroke="url(#a)"/><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="1s" repeatCount="indefinite"/></g></svg>`,
-  );
-}
-
-/** A dot with a ring that swells and fades, for "live" and "attention". */
-export function pulseSvg(color: string): string {
-  const c = hexOf(color);
-
-  return framed(
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5" fill="${c}"><animate attributeName="r" values="5;11;5" dur="1.6s" repeatCount="indefinite"/><animate attributeName="opacity" values=".45;0;.45" dur="1.6s" repeatCount="indefinite"/></circle><circle cx="12" cy="12" r="5" fill="${c}"/></svg>`,
-  );
-}
-
-/** Three bars bouncing out of step, an equaliser for work in progress. */
-export function equalizerSvg(color: string): string {
-  const c = hexOf(color);
-  const bar = (x: number, delay: string) =>
-    `<rect x="${x}" y="6" width="4" height="12" rx="2" fill="${c}"><animate attributeName="height" values="4;16;4" dur="0.9s" begin="${delay}" repeatCount="indefinite"/><animate attributeName="y" values="10;4;10" dur="0.9s" begin="${delay}" repeatCount="indefinite"/></rect>`;
-
-  return framed(
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">${bar(3, "0s")}${bar(10, "-0.3s")}${bar(17, "-0.6s")}</svg>`,
-  );
-}
-
-/** The logo with a light sweeping across the tile, while agents work. */
-export const LOGO_LIVE_SVG = framed(logoSvg("live"));
-
 /** A solid rounded progress bar, `percent` of it filled. */
 export function barSvg(percent: number, color: string): string {
   const p = Math.max(0, Math.min(100, percent));
@@ -246,19 +200,6 @@ export function barSvg(percent: number, color: string): string {
       : "";
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 8" preserveAspectRatio="none"><rect width="200" height="8" rx="4" fill="#8A8F98" fill-opacity=".22"/>${fill}</svg>`;
-}
-
-/** A line chart of `values` (0–100) with a soft area under it. */
-export function sparkSvg(values: number[], color: string): string {
-  const c = hexOf(color);
-  const n = Math.max(2, values.length);
-  const pts = values.map((v, i) => {
-    const x = (i / (n - 1)) * 100;
-    const y = 22 - (Math.max(0, Math.min(100, v)) / 100) * 20;
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  });
-
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 24" preserveAspectRatio="none"><polygon points="0,24 ${pts.join(" ")} 100,24" fill="${c}" fill-opacity=".18"/><polyline points="${pts.join(" ")}" fill="none" stroke="${c}" stroke-width="1.6" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg>`;
 }
 
 /** One bar split into coloured parts, `parts` in percent of the whole. */
@@ -279,19 +220,6 @@ export function stackedSvg(
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 10" preserveAspectRatio="none"><clipPath id="c"><rect width="200" height="10" rx="5"/></clipPath><g clip-path="url(#c)"><rect width="200" height="10" fill="#8A8F98" fill-opacity=".22"/>${rects}</g></svg>`;
 }
 
-/** The logo at rest: a soft glow that breathes behind the tile. */
-export const LOGO_IDLE_SVG = framed(logoSvg("idle"));
-
-/** A solid bar with a gloss that sweeps along the filled part. */
-export function shineBarSvg(percent: number, color: string): string {
-  const p = Math.max(0, Math.min(100, percent));
-  const w = Math.max(4, p * 2);
-
-  return framed(
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 8" preserveAspectRatio="none"><defs><linearGradient id="s" x1="0" x2="1"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset=".5" stop-color="#fff" stop-opacity=".55"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient><clipPath id="f"><rect width="${w}" height="8" rx="4"/></clipPath></defs><rect width="200" height="8" rx="4" fill="#8A8F98" fill-opacity=".22"/><rect width="${w}" height="8" rx="4" fill="${hexOf(color)}"/><g clip-path="url(#f)"><rect x="-40" width="40" height="8" fill="url(#s)"><animate attributeName="x" values="-40;${w + 40}" dur="2.8s" repeatCount="indefinite"/></rect></g></svg>`,
-  );
-}
-
 /** Sparks that twinkle and drift around a star, for an unlock or a new level. */
 export function burstSvg(color: string): string {
   const c = hexOf(color);
@@ -301,14 +229,5 @@ export function burstSvg(color: string): string {
 
   return framed(
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 44">${star}${spark(8, 10, 2, "0s")}${spark(40, 8, 1.6, "-.4s")}${spark(42, 34, 2, "-.8s")}${spark(6, 34, 1.5, "-1.2s")}${spark(24, 4, 1.4, "-.6s")}${spark(24, 40, 1.4, "-1s")}</svg>`,
-  );
-}
-
-/** A check that pops gently, for an agent that has just finished. */
-export function popCheckSvg(color: string): string {
-  const c = hexOf(color);
-
-  return framed(
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" fill="${c}" fill-opacity=".14"><animate attributeName="r" values="8;10.5;8" dur="1.4s" repeatCount="indefinite"/></circle><path d="m8 12 3 3 5-6"/></svg>`,
   );
 }
