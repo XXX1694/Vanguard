@@ -1406,21 +1406,18 @@ export const register: Register = (on, options) => {
       await update($, focus, () => id);
       await $.ui.scroll({ in: PANE, to: "start" }).catch(() => {});
     };
-    /** An agent's name that opens its page when pressed. */
-    const opener = (
-      id: string,
-      title: string,
-      max: number,
-      isBold = true,
-    ): RenderNode => (
+    /**
+     * An agent's name that opens its page when pressed. The name is the
+     * label itself: a Button takes one string child, or none, on engines
+     * before 2.1.295.
+     */
+    const opener = (id: string, title: string, max: number): RenderNode => (
       <Button
         key={`open-${id}`}
         plain
-        label={T.openAgent(title)}
+        label={clip(title, Math.max(8, max))}
         onPress={() => openAgent(id)}
-      >
-        <Text bold={isBold}>{clip(title, Math.max(8, max))}</Text>
-      </Button>
+      />
     );
 
     /** What a squad member is busy with: a verb for the kind of work, then its object. */
@@ -1909,7 +1906,7 @@ export const register: Register = (on, options) => {
           {line(
             "t",
             icon(view.icon, view.color, 12, "s"),
-            opener(hero.id, hero.title, half - extra.length - 6, false),
+            opener(hero.id, hero.title, half - extra.length - 6),
           )}
           <Box flexShrink={0}>
             <Text dimColor>{extra}</Text>

@@ -5,7 +5,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-8B5CF6"></a>
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-D97757">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.2.0-3B82F6">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.2.1-3B82F6">
   <a href="https://github.com/XXX1694/Vanguard/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/XXX1694/Vanguard/actions/workflows/ci.yml/badge.svg"></a>
 </p>
 

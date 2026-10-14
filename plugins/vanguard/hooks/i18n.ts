@@ -157,7 +157,6 @@ const en = {
     plan: "Planning",
   } as Record<string, string>,
   waitingYou: "Waiting for your message",
-  openAgent: (title: S) => `Open ${title}`,
   back: "Back",
   squadHint: "Subagents take a seat here when the main agent hands out work.",
   secTask: "Task",
@@ -341,7 +340,6 @@ const ru: Dict = {
     plan: "Планирует",
   },
   waitingYou: "Ждёт вашего сообщения",
-  openAgent: (title) => `Открыть: ${title}`,
   back: "Назад",
   squadHint:
     "Субагенты займут места здесь, когда главный агент раздаст задачи.",
@@ -500,7 +498,6 @@ const zh: Dict = {
     plan: "规划中",
   },
   waitingYou: "等待你的消息",
-  openAgent: (title) => `打开 ${title}`,
   back: "返回",
   squadHint: "主智能体分派任务后，子智能体会在这里就位。",
   secTask: "任务",
@@ -674,7 +671,6 @@ const hi: Dict = {
     plan: "योजना बना रहा है",
   },
   waitingYou: "आपके संदेश की प्रतीक्षा",
-  openAgent: (title) => `${title} खोलें`,
   back: "वापस",
   squadHint: "मुख्य एजेंट काम बाँटेगा तो सबएजेंट यहाँ जगह लेंगे।",
   secTask: "कार्य",
@@ -850,7 +846,6 @@ const es: Dict = {
     plan: "Planificando",
   },
   waitingYou: "Esperando tu mensaje",
-  openAgent: (title) => `Abrir ${title}`,
   back: "Atrás",
   squadHint:
     "Los subagentes ocupan su sitio aquí cuando el agente principal reparte el trabajo.",
@@ -1028,7 +1023,6 @@ const pt: Dict = {
     plan: "Planejando",
   },
   waitingYou: "Aguardando sua mensagem",
-  openAgent: (title) => `Abrir ${title}`,
   back: "Voltar",
   squadHint:
     "Os subagentes ocupam seu lugar aqui quando o agente principal distribui o trabalho.",
@@ -1198,7 +1192,6 @@ const ja: Dict = {
     plan: "計画中",
   },
   waitingYou: "メッセージを待っています",
-  openAgent: (title) => `${title} を開く`,
   back: "戻る",
   squadHint:
     "メインエージェントが仕事を割り振ると、サブエージェントがここに並びます。",
@@ -1369,7 +1362,6 @@ const ko: Dict = {
     plan: "계획 중",
   },
   waitingYou: "메시지를 기다리는 중",
-  openAgent: (title) => `${title} 열기`,
   back: "뒤로",
   squadHint: "메인 에이전트가 일을 나누면 서브에이전트가 여기에 자리 잡습니다.",
   secTask: "작업",
@@ -1541,7 +1533,6 @@ const de: Dict = {
     plan: "Plant",
   },
   waitingYou: "Wartet auf deine Nachricht",
-  openAgent: (title) => `${title} öffnen`,
   back: "Zurück",
   squadHint:
     "Subagenten nehmen hier Platz, sobald der Hauptagent Arbeit verteilt.",
@@ -1717,7 +1708,6 @@ const fr: Dict = {
     plan: "Planifie",
   },
   waitingYou: "Attend ton message",
-  openAgent: (title) => `Ouvrir ${title}`,
   back: "Retour",
   squadHint:
     "Les sous-agents prennent place ici quand l’agent principal distribue le travail.",

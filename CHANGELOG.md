@@ -2,6 +2,11 @@
 
 All notable changes to Vanguard are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [1.2.1] - 2026-10-14
+
+### Fixed
+- The pane drew nothing on Claude Code before 2.1.295: an agent's name is now a plain button label, which every engine accepts.
+
 ## [1.2.0] - 2026-10-14
 
 ### Added
@@ -40,6 +45,7 @@ All notable changes to Vanguard are listed here. The format follows [Keep a Chan
 - Lifetime profile with levels, XP and eleven achievements, shared across sessions and projects.
 - Settings for the orchestrator, opening at start, animations, sound, context thresholds and visible tabs.
 
+[1.2.1]: https://github.com/XXX1694/Vanguard/releases/tag/v1.2.1
 [1.2.0]: https://github.com/XXX1694/Vanguard/releases/tag/v1.2.0
 [1.1.0]: https://github.com/XXX1694/Vanguard/releases/tag/v1.1.0
 [1.0.0]: https://github.com/XXX1694/Vanguard/releases/tag/v1.0.0
