@@ -706,6 +706,14 @@ describe("orchestrator rules", () => {
     expect(text).toContain("`vanguard:scout`");
     expect(text).toContain("`vanguard:verifier`");
     expect(text).toContain("past 77% full");
+    expect(text).toContain("`Vanguard budget:`");
+    for (const band of ["`plenty`", "`tight`", "`critical`"])
+      expect(text).toContain(band);
+  });
+
+  test("stay static: no live numbers, the same text every time", () => {
+    expect(orchestratorRules(85)).toBe(orchestratorRules(85));
+    expect(orchestratorRules(85).replace("85%", "")).not.toMatch(/\d+%/);
   });
 });
 

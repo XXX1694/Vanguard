@@ -2,6 +2,20 @@
 
 All notable changes to Vanguard are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-10-20
+
+### Added
+- Command guard: before any tool call, from the main agent or a subagent, Vanguard asks you first about destructive shell commands (`rm -rf`, `find -delete`, `git push --force`, `git reset --hard`, `git clean -f`, `git branch -D`, `sudo`, `chmod -R 777`, `curl | sh`, `terraform destroy`, `kubectl delete`, `npm publish`, SQL `DROP`/`TRUNCATE`) and about reading or editing secret files (`.env`, keys, `~/.ssh`, `~/.aws`, `.npmrc`, `credentials`). It refuses the catastrophic ones outright (`rm -rf /`, `mkfs`, `dd` onto a disk, a fork bomb) and tells the agent to ask you instead. It sees through chains, pipes, `sudo`, `env`, full paths and `bash -c`. Each stop goes to the Journal. The new `guard` setting, on by default, turns it off.
+- Smart orchestration: a one-line `Vanguard budget:` note (`plenty`, `tight` or `critical`) reaches the model when your plan or the band of your remaining five-hour and seven-day limits changes, and tells it how many agents and which models it can afford. Pro counts as tight sooner, a window about to reset counts one band lower, and API billing is named with the session cost. On a tight budget each new subagent is told to read excerpts and keep its report short.
+- A `plan` setting (`auto`, `pro`, `max`, `team`, `enterprise`, `api`); `auto` tells a subscription from API billing by itself.
+
+### Changed
+- The orchestrator rules size the task first: small tasks are done directly, medium ones with one or two agents, large ones with the full squad. They pick a model per agent (Haiku for search, Sonnet for mechanical edits and checks, the session's model for design and review) and ask for short briefs and reports. The rules stay static so the system prompt keeps its cache.
+- `/vanguard:orchestrate` starts with a "Size it" step and runs a smaller squad on a tight budget.
+- The `recon`, `docs` and `ship-check` skills are sized to the task and to the `Vanguard budget:` note: a small change is checked directly without agents, recon sends one scout to a small repo or on a tight budget, and docs skip lookups for stable APIs and reuse docs already fetched.
+- The `verifier` agent runs on Sonnet. The architect, builder, reviewer and verifier keep their reports under 250 words.
+- The bundled MCP servers are pinned to fixed versions (`@playwright/mcp@0.0.83`, `server-sequential-thinking@2026.8.31`) instead of `@latest`, so a new release cannot change them unannounced.
+
 ## [1.2.2] - 2026-10-14
 
 ### Fixed
@@ -53,6 +67,7 @@ All notable changes to Vanguard are listed here. The format follows [Keep a Chan
 - Lifetime profile with levels, XP and eleven achievements, shared across sessions and projects.
 - Settings for the orchestrator, opening at start, animations, sound, context thresholds and visible tabs.
 
+[1.3.0]: https://github.com/XXX1694/Vanguard/releases/tag/v1.3.0
 [1.2.2]: https://github.com/XXX1694/Vanguard/releases/tag/v1.2.2
 [1.2.1]: https://github.com/XXX1694/Vanguard/releases/tag/v1.2.1
 [1.2.0]: https://github.com/XXX1694/Vanguard/releases/tag/v1.2.0

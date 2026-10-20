@@ -1,6 +1,6 @@
 {
   "name": "vanguard",
-  "version": "1.2.2",
+  "version": "1.3.0",
   "description": "Command center for Claude Code: a live pane for your squad of subagents, limits and context, an orchestrator that fans work out to specialist agents, bundled MCP servers and skills, and a lifetime profile with levels and achievements.",
   "author": {
     "name": "Abzal Serikbay"
@@ -91,6 +91,19 @@
       "title": "Раздел «Журнал»",
       "description": "Показывать журнал событий и завершённых агентов.",
       "default": true
+    },
+    "guard": {
+      "type": "boolean",
+      "title": "Страж команд",
+      "description": "Спрашивать перед опасными командами (rm -rf, force push, git reset --hard, sudo, curl | sh) и чтением секретов (.env, ключи, ~/.ssh); катастрофические вроде rm -rf / отклонять.",
+      "default": true
+    },
+    "plan": {
+      "type": "string",
+      "title": "Тариф Claude",
+      "description": "От тарифа и остатка лимитов зависит, сколько агентов запускает оркестратор. auto определяет подписку или API сам.",
+      "default": "auto",
+      "options": ["auto", "pro", "max", "team", "enterprise", "api"]
     }
   }
 }

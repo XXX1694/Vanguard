@@ -54,11 +54,13 @@ It works in the terminal and in the desktop app. The desktop draws animated char
 
 Vanguard adds a short set of orchestration rules to the system prompt (turn it off in settings):
 
-- fan independent work out to agents in parallel, and keep the main thread lean;
-- brief every agent with a self-contained prompt;
+- size the task first: do small ones directly, use one or two agents for medium ones, and fan large ones out to the full squad in parallel;
+- pick the model per agent (Haiku for search, Sonnet for mechanical edits and checks, the session's model for design and review) and brief every agent tightly, asking for short reports;
 - fetch current library docs through Context7 instead of relying on memory;
 - verify before calling work done: tests, review, and a browser check for UI;
 - suggest `/handoff` when the context window is nearly full.
+
+**Smart orchestration.** The rules stay static, so the system prompt keeps its cache. What changes goes in a one-line `Vanguard budget:` note that Vanguard adds to the conversation only when your plan or the band of your remaining rate limits changes: `plenty` (orchestrate as usual), `tight` (do more yourself, at most two agents, Haiku or Sonnet) or `critical` (no new squad; finish the step and suggest `/handoff`). Pro counts as tight sooner, and a window about to reset counts one band lower. On API billing the note gives the session cost and keeps the squad small. Set your plan with the `plan` setting, or leave it on `auto`.
 
 ### Agents
 
@@ -68,7 +70,7 @@ Vanguard adds a short set of orchestration rules to the system prompt (turn it o
 | `architect` | One decisive plan, split into parallel workstreams with file ownership | inherits |
 | `builder` | Implements one scoped workstream and runs its checks | inherits |
 | `reviewer` | Finds real defects in a diff, ranked by severity | inherits |
-| `verifier` | Runs tests, reproduces fixes, checks web UI in a real browser | inherits |
+| `verifier` | Runs tests, reproduces fixes, checks web UI in a real browser | Sonnet |
 
 ### Skills
 
@@ -98,6 +100,16 @@ Vanguard adds a short set of orchestration rules to the system prompt (turn it o
 
 Every compaction of the main conversation keeps your goals, decisions, work state, running agents, blockers and next steps. It also writes a Markdown snapshot to `~/.claude/handoffs/`. The pane can copy a ready-made prompt to resume in a fresh session.
 
+### Command guard
+
+Before any tool call, from the main agent or a subagent, Vanguard screens what is about to run. It looks through `&&`, `;` and pipes, `sudo` and `env` prefixes, `VAR=x` assignments, full paths such as `/bin/rm`, and nested `bash -c '...'`.
+
+- **Asks you first**: `rm -rf` (any recursive and forced delete), `find -delete` or `-exec rm`, `git push --force` (also `-f`, `--force-with-lease`, `+branch`), `git reset --hard`, `git clean -f`, `git branch -D`, `sudo`, `chmod -R 777`, `curl ... | sh`, `terraform destroy` and `apply -auto-approve`, `kubectl delete`, `npm`/`pnpm`/`yarn publish`, SQL `DROP TABLE`/`DATABASE`/`SCHEMA` and `TRUNCATE`.
+- **Asks before secrets are read or changed**: `.env` and `.env.*` (but not `.env.example`, `.env.sample` or `.env.template`), `*.pem`, `*.key`, `*.p12`, `*.pfx`, private SSH keys, anything under `~/.ssh`, `~/.aws` or `~/.gnupg`, `.npmrc`, `.netrc`, `.pypirc` and `credentials` files. This covers Read, Edit, Write and `cat`/`head`/`tail`/`cp`/`scp` in a shell.
+- **Refuses outright**: `rm -rf` on `/`, `/*`, `~` or `$HOME`, `mkfs`, `dd` onto a disk device, a fork bomb and `chmod -R 777 /`. The agent is told to ask you to run it yourself.
+
+Each stop is written to the Journal. To turn the guard off, set **Command guard** to off in the settings.
+
 ### Lifetime profile
 
 Levels, XP and achievements are kept in `~/.claude/vanguard/profile.json` and shared by every session in every project. XP comes from finished agents, tool calls, skills, MCP calls and achievements. A banner and a short chime mark each unlock and each new level.
@@ -116,6 +128,8 @@ Open `/plugin`, choose **vanguard**, then **Configure**:
 | Context warning, % | 70 | When the context guard turns yellow |
 | Context critical, % | 85 | When it turns red and suggests a handoff |
 | Arsenal / Achievements / Journal | on | Show these tabs |
+| Command guard | on | Ask before destructive commands and secret files; refuse catastrophic ones |
+| Claude plan | auto | `auto`, `pro`, `max`, `team`, `enterprise` or `api`. With the plan and the limits left, decides how many agents the orchestrator runs. `auto` tells a subscription from API billing by itself. |
 
 ## Privacy
 

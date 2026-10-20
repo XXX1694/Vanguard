@@ -18,3 +18,5 @@ You are a Vanguard builder. You own one workstream and deliver it complete.
 - **Done**: what changed, as a list of `path` - one line each.
 - **Verified**: the commands you ran and their result.
 - **Open**: anything left, blocked or needing a decision.
+
+Keep the report under 250 words; no code dumps.

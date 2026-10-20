@@ -48,6 +48,7 @@ import {
   fmtReset,
   fmtTokens,
   emptyRecord,
+  guardVerdict,
   handoffMarkdown,
   levelOf,
   mergeRecords,
@@ -60,6 +61,9 @@ import {
   mcpServer,
   newlyUnlocked,
   orchestratorRules,
+  budgetBand,
+  budgetNote,
+  resolvePlan,
   nextAchievement,
   serverLabel,
   successStreak,
@@ -158,6 +162,8 @@ type Settings = {
   showArsenal: boolean;
   showAchievements: boolean;
   showLog: boolean;
+  guard: boolean;
+  plan: string;
 };
 const DEFAULTS: Settings = {
   language: "auto",
@@ -170,8 +176,15 @@ const DEFAULTS: Settings = {
   showArsenal: true,
   showAchievements: true,
   showLog: true,
+  guard: true,
+  plan: "auto",
 };
 let settings: Settings = DEFAULTS;
+/**
+ * The plan and band the last `Vanguard budget:` note named in this session
+ * (`plan:band`), so a note goes out only when either changes; empty before one.
+ */
+let lastBudget = "";
 let sessionId = "";
 let lastSaved = "";
 
@@ -350,6 +363,31 @@ function toMeters(u: any, old?: Meters | null): Meters {
     })),
     usd: u?.cost?.usd,
     sessionStartedAt: u?.startedAt ?? old?.sessionStartedAt,
+  };
+}
+
+/**
+ * The budget from the latest meters: the plan, the band and the note for
+ * them; null before any reading tells a subscription or API billing apart.
+ */
+async function budgetNow($: Engine): Promise<{
+  key: string;
+  plan: string;
+  band: string;
+  note: string;
+} | null> {
+  const m: Meters | null = await read($, meters);
+  const rates = m?.rates ?? [];
+  const plan = resolvePlan(settings.plan, rates, m?.usd);
+  if (rates.length === 0 && plan !== "api") return null;
+  const now = await $.clock.now();
+  const band = budgetBand(rates, plan, now);
+
+  return {
+    key: `${plan}:${band}`,
+    plan,
+    band,
+    note: budgetNote(band, plan, rates, now, m?.usd),
   };
 }
 
@@ -780,8 +818,10 @@ async function startUp($: Engine): Promise<void> {
 
 export const register: Register = (on, options) => {
   settings = { ...DEFAULTS, ...(options as Partial<Settings>) };
+  lastBudget = "";
 
   on("session.start", async ($, e, next) => {
+    lastBudget = "";
     await quietly(() => startUp($));
 
     return next(e);
@@ -800,6 +840,48 @@ export const register: Register = (on, options) => {
           text: orchestratorRules(settings.ctxCritical),
           scope: "session" as const,
         },
+      ],
+    };
+  });
+
+  // The budget note: the system prompt stays static (it is cached), so how much
+  // the plan and the limits left allow reaches the model as context on a prompt,
+  // and only when the band or the plan changed. Fails open.
+  on("classic.UserPromptSubmit", async ($, e, next) => {
+    const beneath = await next(e);
+    if (!settings.orchestrator) return beneath;
+    const note = await budgetNow($)
+      .then((b) => {
+        if (!b || b.key === lastBudget) return undefined;
+        const first = lastBudget === "";
+        lastBudget = b.key;
+        // the first prompt stays quiet while all is well
+        if (first && b.band === "plenty" && b.plan !== "api") return undefined;
+        return b.note;
+      })
+      .catch(() => undefined);
+    if (!note) return beneath;
+
+    return {
+      ...beneath,
+      additionalContext: [...(beneath.additionalContext ?? []), note],
+    };
+  });
+
+  // A subagent started on a tight budget is told to keep its reading and report short.
+  on("classic.SubagentStart", async ($, e, next) => {
+    const beneath = await next(e);
+    if (!settings.orchestrator) return beneath;
+    const b = await budgetNow($).catch(() => null);
+    // on API billing every subagent token is paid for, so it gets the hint too
+    const band = b?.plan === "api" && b.band === "plenty" ? "tight" : b?.band;
+    if (!band || band === "plenty") return beneath;
+
+    return {
+      ...beneath,
+      additionalContext: [
+        ...(beneath.additionalContext ?? []),
+        `Vanguard budget is ${band}: read excerpts, keep the report short.`,
       ],
     };
   });
@@ -939,6 +1021,63 @@ export const register: Register = (on, options) => {
 
     return next(e);
   });
+
+  // The guard: destructive commands and secret files ask the user first, the
+  // catastrophic ones are refused. It fires for the main loop and every subagent,
+  // and fails open: a guard that breaks lets the call go on to the normal flow.
+  on("classic.PreToolUse", async ($, e, next) => {
+    if (!settings.guard) return next(e);
+    let verdict: ReturnType<typeof guardVerdict> = null;
+    let reason = "";
+    let label = "";
+    try {
+      const args = e as unknown as Record<string, unknown>;
+      verdict = guardVerdict(e.tool, args);
+      if (verdict) {
+        const T = await textsFor($);
+        const target = args.command ?? args.file_path ?? args.notebook_path;
+        label = clip(
+          plainText(typeof target === "string" ? target : e.tool).replace(
+            /\s+/g,
+            " ",
+          ),
+          80,
+        );
+        const why = T.guardWhy[verdict.rule] ?? verdict.rule;
+        reason =
+          verdict.level === "deny"
+            ? T.guardDeny(label, why)
+            : T.guardAsk(label, why);
+      }
+    } catch {
+      // the guard never stands in the way of a call it could not read
+      verdict = null;
+    }
+    if (!verdict) return next(e);
+    const denied = verdict.level === "deny";
+    await quietly(() =>
+      addLog(
+        $,
+        "shield",
+        denied ? "error" : "warning",
+        "logGuard",
+        label,
+        denied,
+      ),
+    );
+    if (denied) return { deny: reason };
+    // the settings hooks beneath still run: their deny or rewrite stands
+    const beneath = await next(e);
+    if (beneath.deny !== undefined) return beneath;
+
+    return {
+      ask: reason,
+      ...(beneath.updatedInput ? { updatedInput: beneath.updatedInput } : {}),
+      ...(beneath.additionalContext
+        ? { additionalContext: beneath.additionalContext }
+        : {}),
+    };
+  }).catch(($, e, next) => next(e));
 
   on("turn.complete", async ($, e, next) => {
     await quietly(async () => {
@@ -1162,6 +1301,8 @@ export const register: Register = (on, options) => {
           return T.logSkill(String(a0));
         case "logSnapshot":
           return T.logSnapshot(a0 === true);
+        case "logGuard":
+          return T.logGuard(String(a0), a1 === true);
         default:
           return l.text;
       }

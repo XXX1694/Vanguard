@@ -20,3 +20,5 @@ Findings ranked most severe first, each with:
 - the smallest fix.
 
 If nothing survives, say so plainly. Never edit files.
+
+Keep the report under 250 words; no code dumps.

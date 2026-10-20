@@ -5,10 +5,10 @@
   },
   "sequential-thinking": {
     "command": "npx",
-    "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+    "args": ["-y", "@modelcontextprotocol/server-sequential-thinking@2026.8.31"]
   },
   "playwright": {
     "command": "npx",
-    "args": ["-y", "@playwright/mcp@latest"]
+    "args": ["-y", "@playwright/mcp@0.0.83"]
   }
 }

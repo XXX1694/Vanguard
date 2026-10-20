@@ -7,6 +7,11 @@ description: Plan and run a squad of Vanguard agents for a large task - recon wi
 
 Run a large task as a Vanguard squad. You lead; agents do the bulk work.
 
+## 0. Size it
+- Small or medium task (per the orchestration rules): do not run the full squad. Do it yourself, or with one or two agents where they save context.
+- Pick the model per step: scouts `haiku`, builders `sonnet` unless the piece is design-heavy, architect and reviewer the main model.
+- On a `tight` `Vanguard budget:` note: one agent for recon and one for prove, and skip the architect when the plan is obvious. On `critical`: no squad; finish the current step.
+
 ## 1. Recon (parallel)
 Launch `vanguard:scout` agents in one message, one per area the task touches. Brief each with the exact question and the shape of the answer you want.
 
@@ -24,5 +29,5 @@ Tell the user what changed, what was verified and how, and what is left. Keep it
 
 ## Guardrails
 - Two builders never own the same file.
-- Prefer three well-briefed agents to ten vague ones.
+- Launch the fewest agents that do the job: three well-briefed agents beat ten vague ones, and none beats one for a job you can do in a few tool calls.
 - The user's instructions and the project's CLAUDE.md win over this playbook.
