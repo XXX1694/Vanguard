@@ -87,6 +87,7 @@ Vanguard adds a short set of orchestration rules to the system prompt (turn it o
 | --- | --- |
 | `/vanguard` | Opens the pane |
 | `/handoff` | Compacts the context and keeps the plan, then writes a snapshot to `~/.claude/handoffs/` to resume from in a new session |
+| `/limiter` | Flips the limiter; `/limiter off` stops every permission prompt, `/limiter on` brings them back |
 
 ### Bundled MCP servers
 
@@ -109,6 +110,10 @@ Before any tool call, from the main agent or a subagent, Vanguard screens what i
 - **Refuses outright**: `rm -rf` on `/`, `/*`, `~` or `$HOME`, `mkfs`, `dd` onto a disk device, a fork bomb and `chmod -R 777 /`. The agent is told to ask you to run it yourself.
 
 Each stop is written to the Journal. To turn the guard off, set **Command guard** to off in the settings.
+
+### Limiter
+
+The switch at the top of the pane, on every tab, or `/limiter` (`/limiter on`, `/limiter off`). **On** (the default), Claude Code asks for permission as usual. **Off**, nothing asks: every call that would open a permission prompt, from the main agent or a subagent, runs, and Claude is told not to stop for "should I proceed?". Refusals stay: settings deny rules, your organization's limits and the guard's refuse-outright list still stop a call, and Claude's own questions to you still show. While it is off, the band above the prompt says so in red. The choice is remembered in your profile until you switch it back.
 
 ### Lifetime profile
 

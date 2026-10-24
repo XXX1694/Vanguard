@@ -635,6 +635,25 @@ export function orchestratorRules(criticalPercent: number): string {
   ].join("\n");
 }
 
+/**
+ * The section Vanguard adds to the system prompt while the limiter is off
+ * (the switch in the pane, or /limiter off). Static, like the orchestration
+ * rules: the prompt changes only when the switch flips.
+ */
+export function limiterOffRules(): string {
+  return [
+    "# Vanguard: limiter off",
+    "",
+    "The user switched the Vanguard limiter off. Tool permission prompts are approved automatically, and the user durably authorizes you to work without stopping for confirmation:",
+    '- Do not ask "should I proceed?", "want me to...?" or wait for a go-ahead between steps; decide and carry the task through to the end.',
+    "- Where a choice would be the user's, take the sensible default, name it in your report and keep going.",
+    "- Afterwards, report what you did, including anything hard to undo.",
+    "- Ask only when you cannot go on without information only the user has.",
+    "",
+    "Only the asking stops: what the guard refuses (rm -rf /, mkfs, a write to a raw disk) and the never-do rules of CLAUDE.md still hold.",
+  ].join("\n");
+}
+
 // ---- Budget: how many agents the plan and the limits left can afford ----
 
 /** The `plan` setting: the Claude plan, or `auto` to tell a subscription from API billing. */

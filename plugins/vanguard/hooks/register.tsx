@@ -51,6 +51,7 @@ import {
   guardVerdict,
   handoffMarkdown,
   levelOf,
+  limiterOffRules,
   mergeRecords,
   PART_COLORS,
   shortPath,
@@ -126,6 +127,8 @@ const levelSeen = atom({ plugin: "vanguard", key: "levelSeen" } as const, 0);
 /** The agent whose page the pane shows instead of a tab: its id, or MAIN. */
 const focus = atom({ plugin: "vanguard", key: "focus" } as const, null);
 const MAIN = "main";
+/** The limiter: on, the engine asks as usual; off, nothing asks for permission. */
+const limiter = atom({ plugin: "vanguard", key: "limiter" } as const, true);
 
 /** How long a banner stays, and an unlock is marked new. */
 const CELEBRATE_MS = 8000;
@@ -206,6 +209,8 @@ type Profile = {
   collapsed: Record<string, boolean>;
   tab?: Tab;
   lang?: string;
+  /** false once the limiter is switched off; it stays off across sessions. */
+  limiter?: boolean;
 };
 const EMPTY_PROFILE: Profile = {
   version: 1,
@@ -227,6 +232,7 @@ async function readProfile($: Engine): Promise<Profile> {
       collapsed: raw.collapsed ?? {},
       tab: raw.tab,
       lang: raw.lang,
+      limiter: raw.limiter,
     };
   } catch {
     return EMPTY_PROFILE;
@@ -298,6 +304,32 @@ function langOf(picked: string | null | undefined): Lang {
 /** The language for text written outside a drawing (toasts, command answers). */
 async function textsFor($: Engine): Promise<Dict> {
   return dict(langOf(await read($, langPick).catch(() => null)));
+}
+
+/** Whether the limiter is on; a state that cannot be read counts as on. */
+async function limiterOn($: Engine): Promise<boolean> {
+  return (await read($, limiter).catch(() => true)) !== false;
+}
+
+/** Flips the limiter, keeps the choice in the profile and says so. */
+async function setLimiter($: Engine, isOn: boolean): Promise<string> {
+  await update($, limiter, () => isOn);
+  await quietly(() =>
+    writeProfile($, (p) => ({ ...p, limiter: isOn ? undefined : false })),
+  );
+  await quietly(() =>
+    addLog(
+      $,
+      isOn ? "shield" : "zap",
+      isOn ? "success" : "error",
+      "logLimiter",
+      isOn,
+    ),
+  );
+  const text = (await textsFor($)).logLimiter(isOn);
+  $.ui.toast(text);
+
+  return text;
 }
 
 async function detectSystemLang($: Engine): Promise<void> {
@@ -639,6 +671,7 @@ async function loadProfile($: Engine): Promise<void> {
     );
     if (p.tab) await update($, tab, () => p.tab as Tab);
     if (isLang(p.lang)) await update($, langPick, () => p.lang as string);
+    if (p.limiter === false) await update($, limiter, () => false);
     await update($, collapsed, (old: Record<string, boolean> | undefined) => ({
       ...p.collapsed,
       ...(old ?? {}),
@@ -749,6 +782,12 @@ async function startUp($: Engine): Promise<void> {
       description: T.cmdHandoff,
     }),
   );
+  await quietly(() =>
+    $.command.register({
+      name: "limiter",
+      description: T.cmdLimiter,
+    }),
+  );
   await quietly(async () => {
     const now = await $.clock.now();
     await update(
@@ -827,19 +866,37 @@ export const register: Register = (on, options) => {
     return next(e);
   });
 
-  // The orchestration rules: one section after the engine's own, while the setting is on.
+  // The orchestration rules: one section after the engine's own, while the
+  // setting is on; and while the limiter is off, one that stops the asking.
   on("prompt.compose", async ($, e, next) => {
     const result = await next(e);
-    if (!settings.orchestrator) return result;
+    const isFree = !(await limiterOn($));
+    if (!settings.orchestrator && !isFree) return result;
 
     return {
       sections: [
-        ...result.sections.filter((x) => x.id !== "vanguard:orchestrator"),
-        {
-          id: "vanguard:orchestrator",
-          text: orchestratorRules(settings.ctxCritical),
-          scope: "session" as const,
-        },
+        ...result.sections.filter(
+          (x) =>
+            x.id !== "vanguard:orchestrator" && x.id !== "vanguard:limiter",
+        ),
+        ...(settings.orchestrator
+          ? [
+              {
+                id: "vanguard:orchestrator",
+                text: orchestratorRules(settings.ctxCritical),
+                scope: "session" as const,
+              },
+            ]
+          : []),
+        ...(isFree
+          ? [
+              {
+                id: "vanguard:limiter",
+                text: limiterOffRules(),
+                scope: "session" as const,
+              },
+            ]
+          : []),
       ],
     };
   });
@@ -894,6 +951,21 @@ export const register: Register = (on, options) => {
 
   on("command.run", { command: "handoff" }, async ($) => {
     return { text: await compactNow($) };
+  });
+
+  // /limiter flips the switch, /limiter on|off sets it.
+  on("command.run", { command: "limiter" }, async ($, e) => {
+    const arg = e.args.trim().toLowerCase();
+    const wanted = /^(on|вкл|1|true)$/.test(arg)
+      ? true
+      : /^(off|выкл|0|false)$/.test(arg)
+        ? false
+        : arg === ""
+          ? !(await limiterOn($))
+          : undefined;
+    if (wanted === undefined) return { text: (await textsFor($)).limiterUsage };
+
+    return { text: await setLimiter($, wanted) };
   });
 
   on("agent.spawn", async ($, e, next) => {
@@ -1055,6 +1127,8 @@ export const register: Register = (on, options) => {
     }
     if (!verdict) return next(e);
     const denied = verdict.level === "deny";
+    // with the limiter off the guard only refuses: the catastrophic stay stopped
+    if (!denied && !(await limiterOn($))) return next(e);
     await quietly(() =>
       addLog(
         $,
@@ -1078,6 +1152,19 @@ export const register: Register = (on, options) => {
         : {}),
     };
   }).catch(($, e, next) => next(e));
+
+  // The limiter off: every verdict that would put a call to the person (rules,
+  // mode, hooks, the classifier) runs it instead, in the main loop and in every
+  // subagent. A deny stays a deny, and so does an organization's ceiling; tools
+  // that are questions to the person (AskUserQuestion, a plan) keep their dialog.
+  on("tool.check", async ($, e, next) => {
+    const verdict = await next(e);
+    if (verdict.decision !== "ask" || (e.ceiling && e.ceiling !== "allow"))
+      return verdict;
+    if (await limiterOn($)) return verdict;
+
+    return { decision: "allow" as const, reason: "Vanguard limiter is off" };
+  });
 
   on("turn.complete", async ($, e, next) => {
     await quietly(async () => {
@@ -1253,6 +1340,7 @@ export const register: Register = (on, options) => {
     const used: Usage = { ...EMPTY_USAGE, ...((await read($, usage)) ?? {}) };
     const have: Unlock[] = (await read($, unlocked)) ?? [];
     const focusId: string | null = await read($, focus);
+    const isLimited = (await read($, limiter)) !== false;
 
     const running = list
       .filter((x) => x.status === "running")
@@ -1303,6 +1391,8 @@ export const register: Register = (on, options) => {
           return T.logSnapshot(a0 === true);
         case "logGuard":
           return T.logGuard(String(a0), a1 === true);
+        case "logLimiter":
+          return T.logLimiter(a0 === true);
         default:
           return l.text;
       }
@@ -1663,6 +1753,31 @@ export const register: Register = (on, options) => {
           </Text>
         </Box>
       </Box>
+    );
+
+    // ── Limiter: the switch for permission prompts, on every tab ─────────
+    const limiterRow = line(
+      "limiter-row",
+      icon(isLimited ? "shield" : "zap", isLimited ? "success" : "error", 13),
+      [
+        <Button
+          key="limiter"
+          label={isLimited ? T.limiterOn : T.limiterOff}
+          variant={isLimited ? "secondary" : "primary"}
+          onPress={async () => {
+            await setLimiter($, !isLimited);
+          }}
+        />,
+        isLimited ? (
+          <Text key="hint" dimColor wrap="truncate-end">
+            {T.limiterOnHint}
+          </Text>
+        ) : (
+          <Text key="hint" color="error" wrap="truncate-end">
+            {T.limiterOffHint}
+          </Text>
+        ),
+      ],
     );
 
     // ── Stats: one line of figures ───────────────────────────────────────
@@ -3028,6 +3143,7 @@ export const register: Register = (on, options) => {
         rowGap={space.gapY}
       >
         {header}
+        {limiterRow}
         {banner}
         {tabBar}
         {page}
@@ -3044,7 +3160,9 @@ export const register: Register = (on, options) => {
       settings.ctxWarn,
       settings.ctxCritical,
     );
-    if ((running.length === 0 && ctx === "ok") || e.props.hasSurvey)
+    // with the limiter off the band never hides: no asking is not to be forgotten
+    const isFree = (await read($, limiter)) === false;
+    if ((running.length === 0 && ctx === "ok" && !isFree) || e.props.hasSurvey)
       return next(e);
     const T = dict(langOf(await read($, langPick)));
     const els = $.ui.resolve(e);
@@ -3071,6 +3189,12 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="row" alignItems="center" columnGap={1} paddingX={1}>
+        {isFree ? icon("zap", "error", "l") : null}
+        {isFree ? (
+          <Text color="error" bold>
+            {T.limiterOff}
+          </Text>
+        ) : null}
         {running.length > 0 ? icon("users", "claude", "a") : null}
         {running.length > 0 ? (
           <Text color="claude">{T.agentsWorking(running.length)}</Text>

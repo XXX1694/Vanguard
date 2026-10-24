@@ -84,6 +84,17 @@ const en = {
   logLaunched: (title: S) => `Launched: ${title}`,
   logMcp: (label: S) => `MCP in action: ${label}`,
   logSkill: (name: S) => `Skill: ${name}`,
+  logLimiter: (on: boolean): S =>
+    on
+      ? "Limiter on: Claude asks for permission again"
+      : "Limiter off: Claude acts without asking",
+  limiterOn: "Limiter: on",
+  limiterOff: "Limiter: off",
+  limiterOnHint: "Claude asks before risky steps",
+  limiterOffHint: "No permission prompts: Claude does it all itself",
+  cmdLimiter:
+    "Switch the limiter: on, Claude asks for permission; off, it acts without asking (/limiter on|off)",
+  limiterUsage: "Usage: /limiter, /limiter on or /limiter off",
   logGuard: (what: S, denied: boolean) =>
     denied ? `Guard refused: ${what}` : `Guard asked: ${what}`,
   guardAsk: (what: S, why: S) =>
@@ -300,6 +311,17 @@ const ru: Dict = {
   logLaunched: (title) => `Запущен: ${title}`,
   logMcp: (label) => `MCP в деле: ${label}`,
   logSkill: (name) => `Скилл: ${name}`,
+  logLimiter: (on) =>
+    on
+      ? "Ограничитель включён: Claude снова спрашивает разрешение"
+      : "Ограничитель снят: Claude действует без вопросов",
+  limiterOn: "Ограничитель: вкл",
+  limiterOff: "Ограничитель: выкл",
+  limiterOnHint: "Claude спрашивает перед рискованными шагами",
+  limiterOffHint: "Никаких запросов разрешений: Claude делает всё сам",
+  cmdLimiter:
+    "Переключить ограничитель: вкл — Claude спрашивает разрешение, выкл — действует без вопросов (/limiter on|off)",
+  limiterUsage: "Использование: /limiter, /limiter on или /limiter off",
   logGuard: (what, denied) =>
     denied ? `Страж отказал: ${what}` : `Страж спросил: ${what}`,
   guardAsk: (what, why) =>
@@ -487,6 +509,17 @@ const zh: Dict = {
   logLaunched: (title) => `已启动：${title}`,
   logMcp: (label) => `MCP 已使用：${label}`,
   logSkill: (name) => `技能：${name}`,
+  logLimiter: (on) =>
+    on
+      ? "限制器已开启：Claude 会再次请求许可"
+      : "限制器已关闭：Claude 直接执行，不再询问",
+  limiterOn: "限制器：开",
+  limiterOff: "限制器：关",
+  limiterOnHint: "Claude 在有风险的步骤前会先询问",
+  limiterOffHint: "不再弹出许可请求：Claude 自行完成一切",
+  cmdLimiter:
+    "切换限制器：开启时 Claude 请求许可，关闭时直接执行不询问（/limiter on|off）",
+  limiterUsage: "用法：/limiter、/limiter on 或 /limiter off",
   logGuard: (what, denied) =>
     denied ? `守卫已拒绝：${what}` : `守卫已询问：${what}`,
   guardAsk: (what, why) =>
@@ -685,6 +718,17 @@ const hi: Dict = {
   logLaunched: (title) => `शुरू किया: ${title}`,
   logMcp: (label) => `MCP उपयोग में: ${label}`,
   logSkill: (name) => `स्किल: ${name}`,
+  logLimiter: (on) =>
+    on
+      ? "लिमिटर चालू: Claude फिर से अनुमति माँगेगा"
+      : "लिमिटर बंद: Claude बिना पूछे काम करेगा",
+  limiterOn: "लिमिटर: चालू",
+  limiterOff: "लिमिटर: बंद",
+  limiterOnHint: "जोखिम भरे कदमों से पहले Claude पूछता है",
+  limiterOffHint: "कोई अनुमति अनुरोध नहीं: Claude सब कुछ खुद करता है",
+  cmdLimiter:
+    "लिमिटर बदलें: चालू पर Claude अनुमति माँगता है, बंद पर बिना पूछे काम करता है (/limiter on|off)",
+  limiterUsage: "उपयोग: /limiter, /limiter on या /limiter off",
   logGuard: (what, denied) =>
     denied ? `गार्ड ने मना किया: ${what}` : `गार्ड ने पूछा: ${what}`,
   guardAsk: (what, why) =>
@@ -886,6 +930,17 @@ const es: Dict = {
   logLaunched: (title) => `Lanzado: ${title}`,
   logMcp: (label) => `MCP en acción: ${label}`,
   logSkill: (name) => `Skill: ${name}`,
+  logLimiter: (on) =>
+    on
+      ? "Limitador activado: Claude vuelve a pedir permiso"
+      : "Limitador desactivado: Claude actúa sin preguntar",
+  limiterOn: "Limitador: activado",
+  limiterOff: "Limitador: desactivado",
+  limiterOnHint: "Claude pregunta antes de los pasos arriesgados",
+  limiterOffHint: "Sin solicitudes de permiso: Claude lo hace todo solo",
+  cmdLimiter:
+    "Cambiar el limitador: activado, Claude pide permiso; desactivado, actúa sin preguntar (/limiter on|off)",
+  limiterUsage: "Uso: /limiter, /limiter on o /limiter off",
   logGuard: (what, denied) =>
     denied ? `La guardia lo rechazó: ${what}` : `La guardia preguntó: ${what}`,
   guardAsk: (what, why) =>
@@ -1092,6 +1147,17 @@ const pt: Dict = {
   logLaunched: (title) => `Iniciado: ${title}`,
   logMcp: (label) => `MCP em ação: ${label}`,
   logSkill: (name) => `Skill: ${name}`,
+  logLimiter: (on) =>
+    on
+      ? "Limitador ativado: o Claude volta a pedir permissão"
+      : "Limitador desativado: o Claude age sem perguntar",
+  limiterOn: "Limitador: ativado",
+  limiterOff: "Limitador: desativado",
+  limiterOnHint: "O Claude pergunta antes de passos arriscados",
+  limiterOffHint: "Sem pedidos de permissão: o Claude faz tudo sozinho",
+  cmdLimiter:
+    "Alternar o limitador: ativado, o Claude pede permissão; desativado, age sem perguntar (/limiter on|off)",
+  limiterUsage: "Uso: /limiter, /limiter on ou /limiter off",
   logGuard: (what, denied) =>
     denied ? `A guarda recusou: ${what}` : `A guarda perguntou: ${what}`,
   guardAsk: (what, why) =>
@@ -1289,6 +1355,17 @@ const ja: Dict = {
   logLaunched: (title) => `起動：${title}`,
   logMcp: (label) => `MCP 使用：${label}`,
   logSkill: (name) => `スキル：${name}`,
+  logLimiter: (on) =>
+    on
+      ? "リミッターオン：Claude は再び許可を求めます"
+      : "リミッターオフ：Claude は確認せずに実行します",
+  limiterOn: "リミッター：オン",
+  limiterOff: "リミッター：オフ",
+  limiterOnHint: "リスクのある操作の前に Claude が確認します",
+  limiterOffHint: "許可の確認なし：Claude がすべて自分で進めます",
+  cmdLimiter:
+    "リミッターを切り替え：オンで Claude が許可を求め、オフで確認せずに実行（/limiter on|off）",
+  limiterUsage: "使い方：/limiter、/limiter on または /limiter off",
   logGuard: (what, denied) =>
     denied ? `ガードが拒否：${what}` : `ガードが確認：${what}`,
   guardAsk: (what, why) =>
@@ -1489,6 +1566,17 @@ const ko: Dict = {
   logLaunched: (title) => `시작: ${title}`,
   logMcp: (label) => `MCP 사용: ${label}`,
   logSkill: (name) => `스킬: ${name}`,
+  logLimiter: (on) =>
+    on
+      ? "리미터 켜짐: Claude가 다시 권한을 요청합니다"
+      : "리미터 꺼짐: Claude가 묻지 않고 실행합니다",
+  limiterOn: "리미터: 켜짐",
+  limiterOff: "리미터: 꺼짐",
+  limiterOnHint: "위험한 작업 전에 Claude가 확인합니다",
+  limiterOffHint: "권한 요청 없음: Claude가 모든 것을 스스로 합니다",
+  cmdLimiter:
+    "리미터 전환: 켜면 Claude가 권한을 요청하고, 끄면 묻지 않고 실행합니다 (/limiter on|off)",
+  limiterUsage: "사용법: /limiter, /limiter on 또는 /limiter off",
   logGuard: (what, denied) =>
     denied ? `가드가 거부: ${what}` : `가드가 확인 요청: ${what}`,
   guardAsk: (what, why) =>
@@ -1685,6 +1773,17 @@ const de: Dict = {
   logLaunched: (title) => `Gestartet: ${title}`,
   logMcp: (label) => `MCP im Einsatz: ${label}`,
   logSkill: (name) => `Skill: ${name}`,
+  logLimiter: (on) =>
+    on
+      ? "Begrenzer an: Claude fragt wieder um Erlaubnis"
+      : "Begrenzer aus: Claude handelt, ohne zu fragen",
+  limiterOn: "Begrenzer: an",
+  limiterOff: "Begrenzer: aus",
+  limiterOnHint: "Claude fragt vor riskanten Schritten",
+  limiterOffHint: "Keine Berechtigungsabfragen: Claude erledigt alles selbst",
+  cmdLimiter:
+    "Begrenzer umschalten: an, Claude fragt um Erlaubnis; aus, es handelt ohne zu fragen (/limiter on|off)",
+  limiterUsage: "Verwendung: /limiter, /limiter on oder /limiter off",
   logGuard: (what, denied) =>
     denied ? `Wache hat abgelehnt: ${what}` : `Wache hat nachgefragt: ${what}`,
   guardAsk: (what, why) =>
@@ -1888,6 +1987,17 @@ const fr: Dict = {
   logLaunched: (title) => `Lancé : ${title}`,
   logMcp: (label) => `MCP en action : ${label}`,
   logSkill: (name) => `Skill : ${name}`,
+  logLimiter: (on) =>
+    on
+      ? "Limiteur activé : Claude redemande la permission"
+      : "Limiteur désactivé : Claude agit sans demander",
+  limiterOn: "Limiteur : activé",
+  limiterOff: "Limiteur : désactivé",
+  limiterOnHint: "Claude demande avant les étapes risquées",
+  limiterOffHint: "Plus aucune demande d'autorisation : Claude fait tout seul",
+  cmdLimiter:
+    "Basculer le limiteur : activé, Claude demande la permission ; désactivé, il agit sans demander (/limiter on|off)",
+  limiterUsage: "Utilisation : /limiter, /limiter on ou /limiter off",
   logGuard: (what, denied) =>
     denied ? `La garde a refusé : ${what}` : `La garde a demandé : ${what}`,
   guardAsk: (what, why) =>

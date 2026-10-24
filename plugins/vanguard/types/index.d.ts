@@ -175,6 +175,8 @@ declare module "claude-code" {
       lang: string | null;
       /** The agent whose page is open: its id, `main`, or null for the tabs. */
       focus: string | null;
+      /** The limiter: true asks as usual, false lets every call run unasked. */
+      limiter: boolean;
     };
   }
 }

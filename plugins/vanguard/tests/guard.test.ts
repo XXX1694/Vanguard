@@ -194,7 +194,9 @@ test("the guard asks before a force push", EN, async ($, on) => {
     tool: "Bash",
     command: "git push --force origin main",
   } as never);
-  expect(r.isError).toBeFalsy();
+  // the ask reaches the permission decision, and a test has nobody to say yes
+  expect(r.isError).toBe(true);
+  expect(r.text).toContain("Permission to use Bash has been denied");
   // an ask still lets the settings hooks beneath have their say
   expect(reached).toBe(true);
   const pane = await $.ui.mount({

@@ -2,6 +2,11 @@
 
 All notable changes to Vanguard are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-10-24
+
+### Added
+- The limiter switch, at the top of every tab of the pane and as `/limiter` (`/limiter on`, `/limiter off`). Off, nothing asks for permission: every verdict that would open a permission prompt (settings rules, the mode, hooks, the guard, the auto-mode classifier) lets the call run, in the main agent and in every subagent, and a section in the system prompt tells Claude not to stop for "should I proceed?". Refusals stay refusals: settings deny rules, an organization's limits and the guard's catastrophic list (`rm -rf /`, `mkfs`, `dd` onto a disk) still stop a call, and questions that are Claude's to put to you (AskUserQuestion, a plan) still show. While it is off, the band above the prompt says so in red. The choice is kept in your profile across sessions; each flip goes to the Journal.
+
 ## [1.3.0] - 2026-10-20
 
 ### Added

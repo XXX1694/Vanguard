@@ -30,3 +30,7 @@ A `classic.PreToolUse` hook screens every tool call, from the main agent and fro
 - **Deny**: `rm -rf /` or `~`, `mkfs`, `dd` onto a disk device, a fork bomb, `chmod -R 777 /`.
 
 The rules are `guardVerdict` in `hooks/lib.ts`, tested in `tests/guard.test.ts`. A guard error never blocks a call. Turn it off with the `guard` setting.
+
+## Limiter
+
+The `limiter` atom (true by default; `false` is kept in the profile) is flipped by the pane's `limiter` button and `/limiter`. Off, a `tool.check` hook turns every `ask` verdict into `allow` unless the organization set a ceiling, the guard keeps only its `deny` rules, and `prompt.compose` adds the `vanguard:limiter` section (`limiterOffRules` in `hooks/lib.ts`). A failing hook leaves the verdict beneath, so a broken limiter asks. Tests: `tests/limiter.test.ts`.
