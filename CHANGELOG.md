@@ -7,6 +7,9 @@ All notable changes to Vanguard are listed here. The format follows [Keep a Chan
 ### Removed
 - The bundled Sequential Thinking MCP server and the orchestrator rule that sent hard plans through it. Current models reason step by step on their own, so the tool mostly added tokens to every planning turn. The pane still shows a `sequentialthinking` tool as planning if you add such a server yourself.
 
+### Changed
+- Vanguard needs Claude Code 2.1.307 or newer, and CI tests on that version. Before 2.1.307 the guard's "ask" did not reach a permission decision: the force-push test let the command run on 2.1.306 and older.
+
 ## [1.4.0] - 2026-10-24
 
 ### Added

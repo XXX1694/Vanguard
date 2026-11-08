@@ -28,7 +28,7 @@ In Claude Code:
 
 Start a new session, or run `/vanguard` to open the pane now.
 
-**Requirements:** Claude Code 2.1.290 or newer (the live pane uses Claude Code's plugin hooks, which are in early access). Node.js 18+ for the bundled `playwright` MCP server.
+**Requirements:** Claude Code 2.1.307 or newer (the live pane uses Claude Code's plugin hooks, which are in early access). Node.js 18+ for the bundled `playwright` MCP server.
 
 ## What you get
 
