@@ -17,15 +17,17 @@ jobs:
         with:
           node-version: 22
       - name: Install Claude Code
-        run: npm install -g @anthropic-ai/claude-code@2.1.294
+        run: npm install -g @anthropic-ai/claude-code@2.1.307
       - name: Validate the marketplace
         run: claude plugin validate .
       - name: Validate the plugin
         run: claude plugin validate plugins/vanguard
       - name: Test the plugin
         run: claude plugin test plugins/vanguard
+      - name: Test the repository guard
+        run: sh .claude/hooks/guard.test.sh
       - name: Check JSON files
         run: |
-          for f in .claude-plugin/marketplace.json plugins/vanguard/.claude-plugin/plugin.json plugins/vanguard/.mcp.json plugins/vanguard/hooks/hooks.json; do
+          for f in .claude/settings.json .claude-plugin/marketplace.json plugins/vanguard/.claude-plugin/plugin.json plugins/vanguard/.mcp.json plugins/vanguard/hooks/hooks.json; do
             node -e "JSON.parse(require('fs').readFileSync('$f','utf8'))" && echo "ok $f"
           done

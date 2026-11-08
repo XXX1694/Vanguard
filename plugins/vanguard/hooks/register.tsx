@@ -48,8 +48,10 @@ import {
   fmtReset,
   fmtTokens,
   emptyRecord,
+  guardVerdict,
   handoffMarkdown,
   levelOf,
+  limiterOffRules,
   mergeRecords,
   PART_COLORS,
   shortPath,
@@ -60,12 +62,14 @@ import {
   mcpServer,
   newlyUnlocked,
   orchestratorRules,
+  budgetBand,
+  budgetNote,
+  resolvePlan,
   nextAchievement,
   serverLabel,
   successStreak,
   meterColor,
   modelBadge,
-  pad,
   plainText,
   PRESERVE_INSTRUCTIONS,
   pushSample,
@@ -123,6 +127,8 @@ const levelSeen = atom({ plugin: "vanguard", key: "levelSeen" } as const, 0);
 /** The agent whose page the pane shows instead of a tab: its id, or MAIN. */
 const focus = atom({ plugin: "vanguard", key: "focus" } as const, null);
 const MAIN = "main";
+/** The limiter: on, the engine asks as usual; off, nothing asks for permission. */
+const limiter = atom({ plugin: "vanguard", key: "limiter" } as const, true);
 
 /** How long a banner stays, and an unlock is marked new. */
 const CELEBRATE_MS = 8000;
@@ -159,6 +165,8 @@ type Settings = {
   showArsenal: boolean;
   showAchievements: boolean;
   showLog: boolean;
+  guard: boolean;
+  plan: string;
 };
 const DEFAULTS: Settings = {
   language: "auto",
@@ -171,8 +179,15 @@ const DEFAULTS: Settings = {
   showArsenal: true,
   showAchievements: true,
   showLog: true,
+  guard: true,
+  plan: "auto",
 };
 let settings: Settings = DEFAULTS;
+/**
+ * The plan and band the last `Vanguard budget:` note named in this session
+ * (`plan:band`), so a note goes out only when either changes; empty before one.
+ */
+let lastBudget = "";
 let sessionId = "";
 let lastSaved = "";
 
@@ -194,6 +209,8 @@ type Profile = {
   collapsed: Record<string, boolean>;
   tab?: Tab;
   lang?: string;
+  /** false once the limiter is switched off; it stays off across sessions. */
+  limiter?: boolean;
 };
 const EMPTY_PROFILE: Profile = {
   version: 1,
@@ -215,6 +232,7 @@ async function readProfile($: Engine): Promise<Profile> {
       collapsed: raw.collapsed ?? {},
       tab: raw.tab,
       lang: raw.lang,
+      limiter: raw.limiter,
     };
   } catch {
     return EMPTY_PROFILE;
@@ -288,6 +306,32 @@ async function textsFor($: Engine): Promise<Dict> {
   return dict(langOf(await read($, langPick).catch(() => null)));
 }
 
+/** Whether the limiter is on; a state that cannot be read counts as on. */
+async function limiterOn($: Engine): Promise<boolean> {
+  return (await read($, limiter).catch(() => true)) !== false;
+}
+
+/** Flips the limiter, keeps the choice in the profile and says so. */
+async function setLimiter($: Engine, isOn: boolean): Promise<string> {
+  await update($, limiter, () => isOn);
+  await quietly(() =>
+    writeProfile($, (p) => ({ ...p, limiter: isOn ? undefined : false })),
+  );
+  await quietly(() =>
+    addLog(
+      $,
+      isOn ? "shield" : "zap",
+      isOn ? "success" : "error",
+      "logLimiter",
+      isOn,
+    ),
+  );
+  const text = (await textsFor($)).logLimiter(isOn);
+  $.ui.toast(text);
+
+  return text;
+}
+
 async function detectSystemLang($: Engine): Promise<void> {
   const lcAll = await $.env.get("LC_ALL").catch(() => undefined);
   const lcMessages = await $.env.get("LC_MESSAGES").catch(() => undefined);
@@ -351,6 +395,31 @@ function toMeters(u: any, old?: Meters | null): Meters {
     })),
     usd: u?.cost?.usd,
     sessionStartedAt: u?.startedAt ?? old?.sessionStartedAt,
+  };
+}
+
+/**
+ * The budget from the latest meters: the plan, the band and the note for
+ * them; null before any reading tells a subscription or API billing apart.
+ */
+async function budgetNow($: Engine): Promise<{
+  key: string;
+  plan: string;
+  band: string;
+  note: string;
+} | null> {
+  const m: Meters | null = await read($, meters);
+  const rates = m?.rates ?? [];
+  const plan = resolvePlan(settings.plan, rates, m?.usd);
+  if (rates.length === 0 && plan !== "api") return null;
+  const now = await $.clock.now();
+  const band = budgetBand(rates, plan, now);
+
+  return {
+    key: `${plan}:${band}`,
+    plan,
+    band,
+    note: budgetNote(band, plan, rates, now, m?.usd),
   };
 }
 
@@ -602,6 +671,7 @@ async function loadProfile($: Engine): Promise<void> {
     );
     if (p.tab) await update($, tab, () => p.tab as Tab);
     if (isLang(p.lang)) await update($, langPick, () => p.lang as string);
+    if (p.limiter === false) await update($, limiter, () => false);
     await update($, collapsed, (old: Record<string, boolean> | undefined) => ({
       ...p.collapsed,
       ...(old ?? {}),
@@ -712,6 +782,12 @@ async function startUp($: Engine): Promise<void> {
       description: T.cmdHandoff,
     }),
   );
+  await quietly(() =>
+    $.command.register({
+      name: "limiter",
+      description: T.cmdLimiter,
+    }),
+  );
   await quietly(async () => {
     const now = await $.clock.now();
     await update(
@@ -781,26 +857,88 @@ async function startUp($: Engine): Promise<void> {
 
 export const register: Register = (on, options) => {
   settings = { ...DEFAULTS, ...(options as Partial<Settings>) };
+  lastBudget = "";
 
   on("session.start", async ($, e, next) => {
+    lastBudget = "";
     await quietly(() => startUp($));
 
     return next(e);
   });
 
-  // The orchestration rules: one section after the engine's own, while the setting is on.
+  // The orchestration rules: one section after the engine's own, while the
+  // setting is on; and while the limiter is off, one that stops the asking.
   on("prompt.compose", async ($, e, next) => {
     const result = await next(e);
-    if (!settings.orchestrator) return result;
+    const isFree = !(await limiterOn($));
+    if (!settings.orchestrator && !isFree) return result;
 
     return {
       sections: [
-        ...result.sections.filter((x) => x.id !== "vanguard:orchestrator"),
-        {
-          id: "vanguard:orchestrator",
-          text: orchestratorRules(settings.ctxCritical),
-          scope: "session" as const,
-        },
+        ...result.sections.filter(
+          (x) =>
+            x.id !== "vanguard:orchestrator" && x.id !== "vanguard:limiter",
+        ),
+        ...(settings.orchestrator
+          ? [
+              {
+                id: "vanguard:orchestrator",
+                text: orchestratorRules(settings.ctxCritical),
+                scope: "session" as const,
+              },
+            ]
+          : []),
+        ...(isFree
+          ? [
+              {
+                id: "vanguard:limiter",
+                text: limiterOffRules(),
+                scope: "session" as const,
+              },
+            ]
+          : []),
+      ],
+    };
+  });
+
+  // The budget note: the system prompt stays static (it is cached), so how much
+  // the plan and the limits left allow reaches the model as context on a prompt,
+  // and only when the band or the plan changed. Fails open.
+  on("classic.UserPromptSubmit", async ($, e, next) => {
+    const beneath = await next(e);
+    if (!settings.orchestrator) return beneath;
+    const note = await budgetNow($)
+      .then((b) => {
+        if (!b || b.key === lastBudget) return undefined;
+        const first = lastBudget === "";
+        lastBudget = b.key;
+        // the first prompt stays quiet while all is well
+        if (first && b.band === "plenty" && b.plan !== "api") return undefined;
+        return b.note;
+      })
+      .catch(() => undefined);
+    if (!note) return beneath;
+
+    return {
+      ...beneath,
+      additionalContext: [...(beneath.additionalContext ?? []), note],
+    };
+  });
+
+  // A subagent started on a tight budget is told to keep its reading and report short.
+  on("classic.SubagentStart", async ($, e, next) => {
+    const beneath = await next(e);
+    if (!settings.orchestrator) return beneath;
+    const b = await budgetNow($).catch(() => null);
+    // on API billing every subagent token is paid for, so it gets the hint too
+    const band = b?.plan === "api" && b.band === "plenty" ? "tight" : b?.band;
+    if (!band || band === "plenty") return beneath;
+
+    return {
+      ...beneath,
+      additionalContext: [
+        ...(beneath.additionalContext ?? []),
+        `Vanguard budget is ${band}: read excerpts, keep the report short.`,
       ],
     };
   });
@@ -813,6 +951,21 @@ export const register: Register = (on, options) => {
 
   on("command.run", { command: "handoff" }, async ($) => {
     return { text: await compactNow($) };
+  });
+
+  // /limiter flips the switch, /limiter on|off sets it.
+  on("command.run", { command: "limiter" }, async ($, e) => {
+    const arg = e.args.trim().toLowerCase();
+    const wanted = /^(on|вкл|1|true)$/.test(arg)
+      ? true
+      : /^(off|выкл|0|false)$/.test(arg)
+        ? false
+        : arg === ""
+          ? !(await limiterOn($))
+          : undefined;
+    if (wanted === undefined) return { text: (await textsFor($)).limiterUsage };
+
+    return { text: await setLimiter($, wanted) };
   });
 
   on("agent.spawn", async ($, e, next) => {
@@ -939,6 +1092,78 @@ export const register: Register = (on, options) => {
     });
 
     return next(e);
+  });
+
+  // The guard: destructive commands and secret files ask the user first, the
+  // catastrophic ones are refused. It fires for the main loop and every subagent,
+  // and fails open: a guard that breaks lets the call go on to the normal flow.
+  on("classic.PreToolUse", async ($, e, next) => {
+    if (!settings.guard) return next(e);
+    let verdict: ReturnType<typeof guardVerdict> = null;
+    let reason = "";
+    let label = "";
+    try {
+      const args = e as unknown as Record<string, unknown>;
+      verdict = guardVerdict(e.tool, args);
+      if (verdict) {
+        const T = await textsFor($);
+        const target = args.command ?? args.file_path ?? args.notebook_path;
+        label = clip(
+          plainText(typeof target === "string" ? target : e.tool).replace(
+            /\s+/g,
+            " ",
+          ),
+          80,
+        );
+        const why = T.guardWhy[verdict.rule] ?? verdict.rule;
+        reason =
+          verdict.level === "deny"
+            ? T.guardDeny(label, why)
+            : T.guardAsk(label, why);
+      }
+    } catch {
+      // the guard never stands in the way of a call it could not read
+      verdict = null;
+    }
+    if (!verdict) return next(e);
+    const denied = verdict.level === "deny";
+    // with the limiter off the guard only refuses: the catastrophic stay stopped
+    if (!denied && !(await limiterOn($))) return next(e);
+    await quietly(() =>
+      addLog(
+        $,
+        "shield",
+        denied ? "error" : "warning",
+        "logGuard",
+        label,
+        denied,
+      ),
+    );
+    if (denied) return { deny: reason };
+    // the settings hooks beneath still run: their deny or rewrite stands
+    const beneath = await next(e);
+    if (beneath.deny !== undefined) return beneath;
+
+    return {
+      ask: reason,
+      ...(beneath.updatedInput ? { updatedInput: beneath.updatedInput } : {}),
+      ...(beneath.additionalContext
+        ? { additionalContext: beneath.additionalContext }
+        : {}),
+    };
+  }).catch(($, e, next) => next(e));
+
+  // The limiter off: every verdict that would put a call to the person (rules,
+  // mode, hooks, the classifier) runs it instead, in the main loop and in every
+  // subagent. A deny stays a deny, and so does an organization's ceiling; tools
+  // that are questions to the person (AskUserQuestion, a plan) keep their dialog.
+  on("tool.check", async ($, e, next) => {
+    const verdict = await next(e);
+    if (verdict.decision !== "ask" || (e.ceiling && e.ceiling !== "allow"))
+      return verdict;
+    if (await limiterOn($)) return verdict;
+
+    return { decision: "allow" as const, reason: "Vanguard limiter is off" };
   });
 
   on("turn.complete", async ($, e, next) => {
@@ -1115,6 +1340,7 @@ export const register: Register = (on, options) => {
     const used: Usage = { ...EMPTY_USAGE, ...((await read($, usage)) ?? {}) };
     const have: Unlock[] = (await read($, unlocked)) ?? [];
     const focusId: string | null = await read($, focus);
+    const isLimited = (await read($, limiter)) !== false;
 
     const running = list
       .filter((x) => x.status === "running")
@@ -1163,6 +1389,10 @@ export const register: Register = (on, options) => {
           return T.logSkill(String(a0));
         case "logSnapshot":
           return T.logSnapshot(a0 === true);
+        case "logGuard":
+          return T.logGuard(String(a0), a1 === true);
+        case "logLimiter":
+          return T.logLimiter(a0 === true);
         default:
           return l.text;
       }
@@ -1415,7 +1645,7 @@ export const register: Register = (on, options) => {
       <Button
         key={`open-${id}`}
         plain
-        label={clip(title, Math.max(8, max))}
+        label={`${clip(title, Math.max(8, max - 2))} ›`}
         onPress={() => openAgent(id)}
       />
     );
@@ -1523,6 +1753,31 @@ export const register: Register = (on, options) => {
           </Text>
         </Box>
       </Box>
+    );
+
+    // ── Limiter: the switch for permission prompts, on every tab ─────────
+    const limiterRow = line(
+      "limiter-row",
+      icon(isLimited ? "shield" : "zap", isLimited ? "success" : "error", 13),
+      [
+        <Button
+          key="limiter"
+          label={isLimited ? T.limiterOn : T.limiterOff}
+          variant={isLimited ? "secondary" : "primary"}
+          onPress={async () => {
+            await setLimiter($, !isLimited);
+          }}
+        />,
+        isLimited ? (
+          <Text key="hint" dimColor wrap="truncate-end">
+            {T.limiterOnHint}
+          </Text>
+        ) : (
+          <Text key="hint" color="error" wrap="truncate-end">
+            {T.limiterOffHint}
+          </Text>
+        ),
+      ],
     );
 
     // ── Stats: one line of figures ───────────────────────────────────────
@@ -1785,10 +2040,10 @@ export const register: Register = (on, options) => {
     // Limits and the finished list share a row on a wide pane, when both show.
     const isPaired = isWide && offStage.length > 0;
     const limitsRoom = isPaired ? half : inner;
-    const labelCells = isNarrow ? 8 : 10;
-    const barCells = Math.max(4, Math.min(16, limitsRoom - labelCells - 10));
+    const labelCells = 12;
+    const barCells = Math.max(4, Math.min(16, limitsRoom - labelCells - 12));
     // The note fits beside the bar on a wide row, under it otherwise.
-    const noteBeside = limitsRoom - labelCells - barCells - 8 >= 24;
+    const noteBeside = limitsRoom - labelCells - barCells - 10 >= 28;
     const meter = (
       key: string,
       name: IconName,
@@ -1800,17 +2055,30 @@ export const register: Register = (on, options) => {
 
       return (
         <Box key={key} flexDirection="column" minWidth={0}>
-          <Box flexDirection="row" alignItems="center" columnGap={1}>
+          <Box
+            flexDirection="row"
+            alignItems="center"
+            columnGap={1}
+            minWidth={0}
+          >
             {icon(name, color, 13, "i")}
-            <Text key="l">{pad(label, labelCells)}</Text>
-            {progress(percentLeft, color, barCells, "b")}
-            <Text key="p" bold>
-              {pad(`${Math.round(percentLeft)}%`, 4)}
-            </Text>
+            {/* Fixed columns, not padding: the desktop draws text in a
+                proportional face, so only boxes line the bars up. */}
+            <Box key="l" width={labelCells} flexShrink={0}>
+              <Text wrap="truncate-end">{label}</Text>
+            </Box>
+            <Box key="b" flexShrink={0}>
+              {progress(percentLeft, color, barCells)}
+            </Box>
+            <Box key="p" width={5} flexShrink={0} justifyContent="flex-end">
+              <Text bold>{`${Math.round(percentLeft)}%`}</Text>
+            </Box>
             {noteBeside && note ? (
-              <Text key="n" dimColor wrap="truncate-end">
-                {note}
-              </Text>
+              <Box key="n" flexShrink={1} minWidth={0}>
+                <Text dimColor wrap="truncate-end">
+                  {note}
+                </Text>
+              </Box>
             ) : null}
           </Box>
           {!noteBeside && note ? (
@@ -2875,6 +3143,7 @@ export const register: Register = (on, options) => {
         rowGap={space.gapY}
       >
         {header}
+        {limiterRow}
         {banner}
         {tabBar}
         {page}
@@ -2891,7 +3160,9 @@ export const register: Register = (on, options) => {
       settings.ctxWarn,
       settings.ctxCritical,
     );
-    if ((running.length === 0 && ctx === "ok") || e.props.hasSurvey)
+    // with the limiter off the band never hides: no asking is not to be forgotten
+    const isFree = (await read($, limiter)) === false;
+    if ((running.length === 0 && ctx === "ok" && !isFree) || e.props.hasSurvey)
       return next(e);
     const T = dict(langOf(await read($, langPick)));
     const els = $.ui.resolve(e);
@@ -2918,6 +3189,12 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="row" alignItems="center" columnGap={1} paddingX={1}>
+        {isFree ? icon("zap", "error", "l") : null}
+        {isFree ? (
+          <Text color="error" bold>
+            {T.limiterOff}
+          </Text>
+        ) : null}
         {running.length > 0 ? icon("users", "claude", "a") : null}
         {running.length > 0 ? (
           <Text color="claude">{T.agentsWorking(running.length)}</Text>

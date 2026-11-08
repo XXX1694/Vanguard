@@ -84,6 +84,44 @@ const en = {
   logLaunched: (title: S) => `Launched: ${title}`,
   logMcp: (label: S) => `MCP in action: ${label}`,
   logSkill: (name: S) => `Skill: ${name}`,
+  logLimiter: (on: boolean): S =>
+    on
+      ? "Limiter on: Claude asks for permission again"
+      : "Limiter off: Claude acts without asking",
+  limiterOn: "Limiter: on",
+  limiterOff: "Limiter: off",
+  limiterOnHint: "Claude asks before risky steps",
+  limiterOffHint: "No permission prompts: Claude does it all itself",
+  cmdLimiter:
+    "Switch the limiter: on, Claude asks for permission; off, it acts without asking (/limiter on|off)",
+  limiterUsage: "Usage: /limiter, /limiter on or /limiter off",
+  logGuard: (what: S, denied: boolean) =>
+    denied ? `Guard refused: ${what}` : `Guard asked: ${what}`,
+  guardAsk: (what: S, why: S) =>
+    `Vanguard guard: ${why} (\`${what}\`). Approve only if you meant it.`,
+  guardDeny: (what: S, why: S) =>
+    `Vanguard guard refused \`${what}\`: ${why}. Do not retry it or work around it; if it is really needed, ask the user to run it themselves.`,
+  guardWhy: {
+    "rm-root": "it deletes the root or home folder",
+    "rm-rf": "it deletes files recursively without confirmation",
+    mkfs: "it formats a disk",
+    "dd-device": "it writes straight onto a disk device",
+    "fork-bomb": "it is a fork bomb that freezes the machine",
+    "chmod-777-root": "it opens every file on the system to everyone",
+    "chmod-777": "it makes files writable by everyone",
+    "find-delete": "it deletes every file it finds",
+    "force-push": "a force push rewrites remote history",
+    "reset-hard": "it throws away uncommitted work",
+    "git-clean": "it deletes untracked files for good",
+    "branch-delete": "it deletes a branch even if it is not merged",
+    sudo: "it runs with administrator rights",
+    "pipe-to-shell": "it runs a script downloaded from the internet",
+    terraform: "it changes or destroys infrastructure",
+    "kubectl-delete": "it deletes cluster resources",
+    publish: "it publishes a package to the registry",
+    "sql-drop": "it drops or empties database tables",
+    "secret-file": "this file may hold secrets: keys, tokens or passwords",
+  } as Record<string, string>,
   logSnapshot: (auto: boolean) =>
     `Context snapshot saved (${auto ? "auto" : "manual"})`,
   logStatus: (status: S, title: S, time: S) => `${status}: ${title} · ${time}`,
@@ -273,6 +311,44 @@ const ru: Dict = {
   logLaunched: (title) => `Запущен: ${title}`,
   logMcp: (label) => `MCP в деле: ${label}`,
   logSkill: (name) => `Скилл: ${name}`,
+  logLimiter: (on) =>
+    on
+      ? "Ограничитель включён: Claude снова спрашивает разрешение"
+      : "Ограничитель снят: Claude действует без вопросов",
+  limiterOn: "Ограничитель: вкл",
+  limiterOff: "Ограничитель: выкл",
+  limiterOnHint: "Claude спрашивает перед рискованными шагами",
+  limiterOffHint: "Никаких запросов разрешений: Claude делает всё сам",
+  cmdLimiter:
+    "Переключить ограничитель: вкл — Claude спрашивает разрешение, выкл — действует без вопросов (/limiter on|off)",
+  limiterUsage: "Использование: /limiter, /limiter on или /limiter off",
+  logGuard: (what, denied) =>
+    denied ? `Страж отказал: ${what}` : `Страж спросил: ${what}`,
+  guardAsk: (what, why) =>
+    `Страж Vanguard: ${why} (\`${what}\`). Одобряйте, только если так и задумано.`,
+  guardDeny: (what, why) =>
+    `Страж Vanguard отказал в \`${what}\`: ${why}. Не повторяйте и не обходите; если это действительно нужно, попросите пользователя выполнить команду самому.`,
+  guardWhy: {
+    "rm-root": "удаляет корень или домашнюю папку",
+    "rm-rf": "рекурсивно удаляет файлы без подтверждения",
+    mkfs: "форматирует диск",
+    "dd-device": "пишет прямо на дисковое устройство",
+    "fork-bomb": "это fork-бомба, она вешает машину",
+    "chmod-777-root": "открывает все файлы системы для всех",
+    "chmod-777": "делает файлы доступными на запись всем",
+    "find-delete": "удаляет все найденные файлы",
+    "force-push": "force push переписывает историю на сервере",
+    "reset-hard": "выбрасывает незакоммиченную работу",
+    "git-clean": "безвозвратно удаляет неотслеживаемые файлы",
+    "branch-delete": "удаляет ветку, даже если она не слита",
+    sudo: "запускается с правами администратора",
+    "pipe-to-shell": "запускает скрипт, скачанный из интернета",
+    terraform: "меняет или уничтожает инфраструктуру",
+    "kubectl-delete": "удаляет ресурсы кластера",
+    publish: "публикует пакет в реестр",
+    "sql-drop": "удаляет или очищает таблицы базы данных",
+    "secret-file": "в этом файле могут быть секреты: ключи, токены или пароли",
+  },
   logSnapshot: (auto) =>
     `Снимок контекста сохранён (${auto ? "авто" : "вручную"})`,
   logStatus: (status, title, time) => `${status}: ${title} · ${time}`,
@@ -433,6 +509,44 @@ const zh: Dict = {
   logLaunched: (title) => `已启动：${title}`,
   logMcp: (label) => `MCP 已使用：${label}`,
   logSkill: (name) => `技能：${name}`,
+  logLimiter: (on) =>
+    on
+      ? "限制器已开启：Claude 会再次请求许可"
+      : "限制器已关闭：Claude 直接执行，不再询问",
+  limiterOn: "限制器：开",
+  limiterOff: "限制器：关",
+  limiterOnHint: "Claude 在有风险的步骤前会先询问",
+  limiterOffHint: "不再弹出许可请求：Claude 自行完成一切",
+  cmdLimiter:
+    "切换限制器：开启时 Claude 请求许可，关闭时直接执行不询问（/limiter on|off）",
+  limiterUsage: "用法：/limiter、/limiter on 或 /limiter off",
+  logGuard: (what, denied) =>
+    denied ? `守卫已拒绝：${what}` : `守卫已询问：${what}`,
+  guardAsk: (what, why) =>
+    `Vanguard 守卫：${why}（\`${what}\`）。仅在确有此意时批准。`,
+  guardDeny: (what, why) =>
+    `Vanguard 守卫拒绝了 \`${what}\`：${why}。不要重试或绕过；如果确实需要，请让用户亲自运行。`,
+  guardWhy: {
+    "rm-root": "会删除根目录或主目录",
+    "rm-rf": "会不经确认递归删除文件",
+    mkfs: "会格式化磁盘",
+    "dd-device": "会直接写入磁盘设备",
+    "fork-bomb": "这是会卡死机器的 fork 炸弹",
+    "chmod-777-root": "会让系统所有文件对所有人开放",
+    "chmod-777": "会让文件对所有人可写",
+    "find-delete": "会删除找到的每个文件",
+    "force-push": "强制推送会改写远程历史",
+    "reset-hard": "会丢弃未提交的工作",
+    "git-clean": "会永久删除未跟踪的文件",
+    "branch-delete": "会删除分支，即使它尚未合并",
+    sudo: "会以管理员权限运行",
+    "pipe-to-shell": "会运行从网上下载的脚本",
+    terraform: "会更改或销毁基础设施",
+    "kubectl-delete": "会删除集群资源",
+    publish: "会把包发布到仓库",
+    "sql-drop": "会删除或清空数据库表",
+    "secret-file": "此文件可能包含机密：密钥、令牌或密码",
+  },
   logSnapshot: (auto) => `上下文快照已保存（${auto ? "自动" : "手动"}）`,
   logStatus: (status, title, time) => `${status}：${title} · ${time}`,
   tabOverview: "概览",
@@ -604,6 +718,44 @@ const hi: Dict = {
   logLaunched: (title) => `शुरू किया: ${title}`,
   logMcp: (label) => `MCP उपयोग में: ${label}`,
   logSkill: (name) => `स्किल: ${name}`,
+  logLimiter: (on) =>
+    on
+      ? "लिमिटर चालू: Claude फिर से अनुमति माँगेगा"
+      : "लिमिटर बंद: Claude बिना पूछे काम करेगा",
+  limiterOn: "लिमिटर: चालू",
+  limiterOff: "लिमिटर: बंद",
+  limiterOnHint: "जोखिम भरे कदमों से पहले Claude पूछता है",
+  limiterOffHint: "कोई अनुमति अनुरोध नहीं: Claude सब कुछ खुद करता है",
+  cmdLimiter:
+    "लिमिटर बदलें: चालू पर Claude अनुमति माँगता है, बंद पर बिना पूछे काम करता है (/limiter on|off)",
+  limiterUsage: "उपयोग: /limiter, /limiter on या /limiter off",
+  logGuard: (what, denied) =>
+    denied ? `गार्ड ने मना किया: ${what}` : `गार्ड ने पूछा: ${what}`,
+  guardAsk: (what, why) =>
+    `Vanguard गार्ड: ${why} (\`${what}\`)। तभी मंज़ूर करें जब आपका यही इरादा हो।`,
+  guardDeny: (what, why) =>
+    `Vanguard गार्ड ने \`${what}\` को मना किया: ${why}। इसे दोबारा न चलाएँ और न ही इसका रास्ता निकालें; अगर सच में ज़रूरी है, तो उपयोगकर्ता से इसे खुद चलाने को कहें।`,
+  guardWhy: {
+    "rm-root": "यह रूट या होम फ़ोल्डर मिटा देता है",
+    "rm-rf": "यह बिना पुष्टि के फ़ाइलें रिकर्सिव रूप से मिटाता है",
+    mkfs: "यह डिस्क फ़ॉर्मैट करता है",
+    "dd-device": "यह सीधे डिस्क डिवाइस पर लिखता है",
+    "fork-bomb": "यह fork bomb है जो मशीन को जाम कर देता है",
+    "chmod-777-root": "यह सिस्टम की हर फ़ाइल सबके लिए खोल देता है",
+    "chmod-777": "यह फ़ाइलों को सबके लिए लिखने योग्य बना देता है",
+    "find-delete": "यह मिली हर फ़ाइल मिटा देता है",
+    "force-push": "force push रिमोट इतिहास को दोबारा लिखता है",
+    "reset-hard": "यह बिना कमिट किया काम फेंक देता है",
+    "git-clean": "यह अनट्रैक्ड फ़ाइलें हमेशा के लिए मिटा देता है",
+    "branch-delete": "यह ब्रांच मिटा देता है, भले ही वह मर्ज न हुई हो",
+    sudo: "यह एडमिनिस्ट्रेटर अधिकारों से चलता है",
+    "pipe-to-shell": "यह इंटरनेट से डाउनलोड की गई स्क्रिप्ट चलाता है",
+    terraform: "यह इन्फ्रास्ट्रक्चर बदलता या नष्ट करता है",
+    "kubectl-delete": "यह क्लस्टर संसाधन मिटाता है",
+    publish: "यह पैकेज को रजिस्ट्री में प्रकाशित करता है",
+    "sql-drop": "यह डेटाबेस टेबल हटाता या खाली करता है",
+    "secret-file": "इस फ़ाइल में राज़ हो सकते हैं: कुंजियाँ, टोकन या पासवर्ड",
+  },
   logSnapshot: (auto) =>
     `कॉन्टेक्स्ट स्नैपशॉट सहेजा गया (${auto ? "स्वतः" : "मैन्युअल"})`,
   logStatus: (status, title, time) => `${status}: ${title} · ${time}`,
@@ -778,6 +930,45 @@ const es: Dict = {
   logLaunched: (title) => `Lanzado: ${title}`,
   logMcp: (label) => `MCP en acción: ${label}`,
   logSkill: (name) => `Skill: ${name}`,
+  logLimiter: (on) =>
+    on
+      ? "Limitador activado: Claude vuelve a pedir permiso"
+      : "Limitador desactivado: Claude actúa sin preguntar",
+  limiterOn: "Limitador: activado",
+  limiterOff: "Limitador: desactivado",
+  limiterOnHint: "Claude pregunta antes de los pasos arriesgados",
+  limiterOffHint: "Sin solicitudes de permiso: Claude lo hace todo solo",
+  cmdLimiter:
+    "Cambiar el limitador: activado, Claude pide permiso; desactivado, actúa sin preguntar (/limiter on|off)",
+  limiterUsage: "Uso: /limiter, /limiter on o /limiter off",
+  logGuard: (what, denied) =>
+    denied ? `La guardia lo rechazó: ${what}` : `La guardia preguntó: ${what}`,
+  guardAsk: (what, why) =>
+    `Guardia de Vanguard: ${why} (\`${what}\`). Apruébalo solo si era tu intención.`,
+  guardDeny: (what, why) =>
+    `La guardia de Vanguard rechazó \`${what}\`: ${why}. No lo reintentes ni lo esquives; si de verdad hace falta, pide al usuario que lo ejecute él mismo.`,
+  guardWhy: {
+    "rm-root": "borra la raíz o la carpeta personal",
+    "rm-rf": "borra archivos de forma recursiva sin confirmación",
+    mkfs: "formatea un disco",
+    "dd-device": "escribe directamente en un dispositivo de disco",
+    "fork-bomb": "es una fork bomb que bloquea la máquina",
+    "chmod-777-root": "abre todos los archivos del sistema a todo el mundo",
+    "chmod-777": "hace que los archivos sean editables por todos",
+    "find-delete": "borra todos los archivos que encuentra",
+    "force-push": "un force push reescribe el historial remoto",
+    "reset-hard": "descarta el trabajo sin commit",
+    "git-clean": "borra para siempre los archivos sin seguimiento",
+    "branch-delete": "borra una rama aunque no esté fusionada",
+    sudo: "se ejecuta con permisos de administrador",
+    "pipe-to-shell": "ejecuta un script descargado de internet",
+    terraform: "cambia o destruye infraestructura",
+    "kubectl-delete": "borra recursos del clúster",
+    publish: "publica un paquete en el registro",
+    "sql-drop": "elimina o vacía tablas de la base de datos",
+    "secret-file":
+      "este archivo puede contener secretos: claves, tokens o contraseñas",
+  },
   logSnapshot: (auto) =>
     `Instantánea del contexto guardada (${auto ? "auto" : "manual"})`,
   logStatus: (status, title, time) => `${status}: ${title} · ${time}`,
@@ -956,6 +1147,45 @@ const pt: Dict = {
   logLaunched: (title) => `Iniciado: ${title}`,
   logMcp: (label) => `MCP em ação: ${label}`,
   logSkill: (name) => `Skill: ${name}`,
+  logLimiter: (on) =>
+    on
+      ? "Limitador ativado: o Claude volta a pedir permissão"
+      : "Limitador desativado: o Claude age sem perguntar",
+  limiterOn: "Limitador: ativado",
+  limiterOff: "Limitador: desativado",
+  limiterOnHint: "O Claude pergunta antes de passos arriscados",
+  limiterOffHint: "Sem pedidos de permissão: o Claude faz tudo sozinho",
+  cmdLimiter:
+    "Alternar o limitador: ativado, o Claude pede permissão; desativado, age sem perguntar (/limiter on|off)",
+  limiterUsage: "Uso: /limiter, /limiter on ou /limiter off",
+  logGuard: (what, denied) =>
+    denied ? `A guarda recusou: ${what}` : `A guarda perguntou: ${what}`,
+  guardAsk: (what, why) =>
+    `Guarda do Vanguard: ${why} (\`${what}\`). Aprove só se era essa a intenção.`,
+  guardDeny: (what, why) =>
+    `A guarda do Vanguard recusou \`${what}\`: ${why}. Não tente de novo nem contorne; se for mesmo necessário, peça ao usuário que execute ele mesmo.`,
+  guardWhy: {
+    "rm-root": "apaga a raiz ou a pasta pessoal",
+    "rm-rf": "apaga arquivos recursivamente sem confirmação",
+    mkfs: "formata um disco",
+    "dd-device": "grava direto em um dispositivo de disco",
+    "fork-bomb": "é uma fork bomb que trava a máquina",
+    "chmod-777-root": "abre todos os arquivos do sistema para todos",
+    "chmod-777": "deixa os arquivos graváveis por todos",
+    "find-delete": "apaga todos os arquivos que encontra",
+    "force-push": "um force push reescreve o histórico remoto",
+    "reset-hard": "descarta o trabalho sem commit",
+    "git-clean": "apaga de vez os arquivos não rastreados",
+    "branch-delete": "apaga um branch mesmo que não esteja mesclado",
+    sudo: "roda com privilégios de administrador",
+    "pipe-to-shell": "roda um script baixado da internet",
+    terraform: "altera ou destrói infraestrutura",
+    "kubectl-delete": "apaga recursos do cluster",
+    publish: "publica um pacote no registro",
+    "sql-drop": "remove ou esvazia tabelas do banco de dados",
+    "secret-file":
+      "este arquivo pode conter segredos: chaves, tokens ou senhas",
+  },
   logSnapshot: (auto) =>
     `Snapshot do contexto salvo (${auto ? "auto" : "manual"})`,
   logStatus: (status, title, time) => `${status}: ${title} · ${time}`,
@@ -1125,6 +1355,45 @@ const ja: Dict = {
   logLaunched: (title) => `起動：${title}`,
   logMcp: (label) => `MCP 使用：${label}`,
   logSkill: (name) => `スキル：${name}`,
+  logLimiter: (on) =>
+    on
+      ? "リミッターオン：Claude は再び許可を求めます"
+      : "リミッターオフ：Claude は確認せずに実行します",
+  limiterOn: "リミッター：オン",
+  limiterOff: "リミッター：オフ",
+  limiterOnHint: "リスクのある操作の前に Claude が確認します",
+  limiterOffHint: "許可の確認なし：Claude がすべて自分で進めます",
+  cmdLimiter:
+    "リミッターを切り替え：オンで Claude が許可を求め、オフで確認せずに実行（/limiter on|off）",
+  limiterUsage: "使い方：/limiter、/limiter on または /limiter off",
+  logGuard: (what, denied) =>
+    denied ? `ガードが拒否：${what}` : `ガードが確認：${what}`,
+  guardAsk: (what, why) =>
+    `Vanguard ガード：${why}（\`${what}\`）。意図した操作の場合のみ承認してください。`,
+  guardDeny: (what, why) =>
+    `Vanguard ガードが \`${what}\` を拒否しました：${why}。再試行や回避はしないでください。本当に必要なら、ユーザー自身に実行してもらってください。`,
+  guardWhy: {
+    "rm-root": "ルートまたはホームフォルダを削除します",
+    "rm-rf": "確認なしでファイルを再帰的に削除します",
+    mkfs: "ディスクをフォーマットします",
+    "dd-device": "ディスクデバイスに直接書き込みます",
+    "fork-bomb": "マシンを固まらせるフォーク爆弾です",
+    "chmod-777-root": "システムの全ファイルを全員に開放します",
+    "chmod-777": "ファイルを全員が書き込めるようにします",
+    "find-delete": "見つけたファイルをすべて削除します",
+    "force-push": "強制プッシュはリモートの履歴を書き換えます",
+    "reset-hard": "未コミットの作業を破棄します",
+    "git-clean": "未追跡のファイルを完全に削除します",
+    "branch-delete": "マージされていなくてもブランチを削除します",
+    sudo: "管理者権限で実行されます",
+    "pipe-to-shell": "インターネットから取得したスクリプトを実行します",
+    terraform: "インフラを変更または破棄します",
+    "kubectl-delete": "クラスタのリソースを削除します",
+    publish: "パッケージをレジストリに公開します",
+    "sql-drop": "データベースのテーブルを削除または空にします",
+    "secret-file":
+      "このファイルには秘密情報（鍵、トークン、パスワード）が含まれている可能性があります",
+  },
   logSnapshot: (auto) =>
     `コンテキストのスナップショットを保存（${auto ? "自動" : "手動"}）`,
   logStatus: (status, title, time) => `${status}：${title} · ${time}`,
@@ -1297,6 +1566,45 @@ const ko: Dict = {
   logLaunched: (title) => `시작: ${title}`,
   logMcp: (label) => `MCP 사용: ${label}`,
   logSkill: (name) => `스킬: ${name}`,
+  logLimiter: (on) =>
+    on
+      ? "리미터 켜짐: Claude가 다시 권한을 요청합니다"
+      : "리미터 꺼짐: Claude가 묻지 않고 실행합니다",
+  limiterOn: "리미터: 켜짐",
+  limiterOff: "리미터: 꺼짐",
+  limiterOnHint: "위험한 작업 전에 Claude가 확인합니다",
+  limiterOffHint: "권한 요청 없음: Claude가 모든 것을 스스로 합니다",
+  cmdLimiter:
+    "리미터 전환: 켜면 Claude가 권한을 요청하고, 끄면 묻지 않고 실행합니다 (/limiter on|off)",
+  limiterUsage: "사용법: /limiter, /limiter on 또는 /limiter off",
+  logGuard: (what, denied) =>
+    denied ? `가드가 거부: ${what}` : `가드가 확인 요청: ${what}`,
+  guardAsk: (what, why) =>
+    `Vanguard 가드: ${why} (\`${what}\`). 의도한 경우에만 승인하세요.`,
+  guardDeny: (what, why) =>
+    `Vanguard 가드가 \`${what}\`을(를) 거부했습니다: ${why}. 다시 시도하거나 우회하지 마세요. 정말 필요하면 사용자에게 직접 실행해 달라고 요청하세요.`,
+  guardWhy: {
+    "rm-root": "루트 또는 홈 폴더를 삭제합니다",
+    "rm-rf": "확인 없이 파일을 재귀적으로 삭제합니다",
+    mkfs: "디스크를 포맷합니다",
+    "dd-device": "디스크 장치에 직접 씁니다",
+    "fork-bomb": "머신을 멈추게 하는 포크 폭탄입니다",
+    "chmod-777-root": "시스템의 모든 파일을 모두에게 엽니다",
+    "chmod-777": "파일을 누구나 쓸 수 있게 만듭니다",
+    "find-delete": "찾은 모든 파일을 삭제합니다",
+    "force-push": "강제 푸시는 원격 기록을 다시 씁니다",
+    "reset-hard": "커밋하지 않은 작업을 버립니다",
+    "git-clean": "추적되지 않는 파일을 영구 삭제합니다",
+    "branch-delete": "병합되지 않은 브랜치도 삭제합니다",
+    sudo: "관리자 권한으로 실행됩니다",
+    "pipe-to-shell": "인터넷에서 받은 스크립트를 실행합니다",
+    terraform: "인프라를 변경하거나 파괴합니다",
+    "kubectl-delete": "클러스터 리소스를 삭제합니다",
+    publish: "패키지를 레지스트리에 게시합니다",
+    "sql-drop": "데이터베이스 테이블을 삭제하거나 비웁니다",
+    "secret-file":
+      "이 파일에는 키, 토큰, 비밀번호 같은 비밀이 있을 수 있습니다",
+  },
   logSnapshot: (auto) => `컨텍스트 스냅샷 저장 (${auto ? "자동" : "수동"})`,
   logStatus: (status, title, time) => `${status}: ${title} · ${time}`,
   tabOverview: "개요",
@@ -1465,6 +1773,45 @@ const de: Dict = {
   logLaunched: (title) => `Gestartet: ${title}`,
   logMcp: (label) => `MCP im Einsatz: ${label}`,
   logSkill: (name) => `Skill: ${name}`,
+  logLimiter: (on) =>
+    on
+      ? "Begrenzer an: Claude fragt wieder um Erlaubnis"
+      : "Begrenzer aus: Claude handelt, ohne zu fragen",
+  limiterOn: "Begrenzer: an",
+  limiterOff: "Begrenzer: aus",
+  limiterOnHint: "Claude fragt vor riskanten Schritten",
+  limiterOffHint: "Keine Berechtigungsabfragen: Claude erledigt alles selbst",
+  cmdLimiter:
+    "Begrenzer umschalten: an, Claude fragt um Erlaubnis; aus, es handelt ohne zu fragen (/limiter on|off)",
+  limiterUsage: "Verwendung: /limiter, /limiter on oder /limiter off",
+  logGuard: (what, denied) =>
+    denied ? `Wache hat abgelehnt: ${what}` : `Wache hat nachgefragt: ${what}`,
+  guardAsk: (what, why) =>
+    `Vanguard-Wache: ${why} (\`${what}\`). Nur bestätigen, wenn das so gewollt ist.`,
+  guardDeny: (what, why) =>
+    `Die Vanguard-Wache hat \`${what}\` abgelehnt: ${why}. Nicht erneut versuchen und nicht umgehen; wenn es wirklich nötig ist, bitte den Nutzer, es selbst auszuführen.`,
+  guardWhy: {
+    "rm-root": "es löscht das Wurzel- oder Home-Verzeichnis",
+    "rm-rf": "es löscht Dateien rekursiv ohne Rückfrage",
+    mkfs: "es formatiert eine Festplatte",
+    "dd-device": "es schreibt direkt auf ein Laufwerk",
+    "fork-bomb": "es ist eine Fork-Bombe, die den Rechner lahmlegt",
+    "chmod-777-root": "es öffnet alle Dateien des Systems für alle",
+    "chmod-777": "es macht Dateien für alle beschreibbar",
+    "find-delete": "es löscht jede gefundene Datei",
+    "force-push": "ein Force-Push schreibt die Remote-Historie um",
+    "reset-hard": "es verwirft nicht committete Arbeit",
+    "git-clean": "es löscht nicht verfolgte Dateien endgültig",
+    "branch-delete": "es löscht einen Branch, auch wenn er nicht gemergt ist",
+    sudo: "es läuft mit Administratorrechten",
+    "pipe-to-shell": "es führt ein aus dem Internet geladenes Skript aus",
+    terraform: "es ändert oder zerstört Infrastruktur",
+    "kubectl-delete": "es löscht Cluster-Ressourcen",
+    publish: "es veröffentlicht ein Paket in der Registry",
+    "sql-drop": "es löscht oder leert Datenbanktabellen",
+    "secret-file":
+      "diese Datei kann Geheimnisse enthalten: Schlüssel, Tokens oder Passwörter",
+  },
   logSnapshot: (auto) =>
     `Kontext-Snapshot gespeichert (${auto ? "automatisch" : "manuell"})`,
   logStatus: (status, title, time) => `${status}: ${title} · ${time}`,
@@ -1640,6 +1987,45 @@ const fr: Dict = {
   logLaunched: (title) => `Lancé : ${title}`,
   logMcp: (label) => `MCP en action : ${label}`,
   logSkill: (name) => `Skill : ${name}`,
+  logLimiter: (on) =>
+    on
+      ? "Limiteur activé : Claude redemande la permission"
+      : "Limiteur désactivé : Claude agit sans demander",
+  limiterOn: "Limiteur : activé",
+  limiterOff: "Limiteur : désactivé",
+  limiterOnHint: "Claude demande avant les étapes risquées",
+  limiterOffHint: "Plus aucune demande d'autorisation : Claude fait tout seul",
+  cmdLimiter:
+    "Basculer le limiteur : activé, Claude demande la permission ; désactivé, il agit sans demander (/limiter on|off)",
+  limiterUsage: "Utilisation : /limiter, /limiter on ou /limiter off",
+  logGuard: (what, denied) =>
+    denied ? `La garde a refusé : ${what}` : `La garde a demandé : ${what}`,
+  guardAsk: (what, why) =>
+    `Garde Vanguard : ${why} (\`${what}\`). N'approuvez que si c'était voulu.`,
+  guardDeny: (what, why) =>
+    `La garde Vanguard a refusé \`${what}\` : ${why}. Ne réessayez pas et ne contournez pas ; si c'est vraiment nécessaire, demandez à l'utilisateur de le lancer lui-même.`,
+  guardWhy: {
+    "rm-root": "supprime la racine ou le dossier personnel",
+    "rm-rf": "supprime des fichiers récursivement sans confirmation",
+    mkfs: "formate un disque",
+    "dd-device": "écrit directement sur un périphérique disque",
+    "fork-bomb": "c'est une fork bomb qui bloque la machine",
+    "chmod-777-root": "ouvre tous les fichiers du système à tout le monde",
+    "chmod-777": "rend les fichiers modifiables par tous",
+    "find-delete": "supprime tous les fichiers trouvés",
+    "force-push": "un force push réécrit l'historique distant",
+    "reset-hard": "jette le travail non commité",
+    "git-clean": "supprime définitivement les fichiers non suivis",
+    "branch-delete": "supprime une branche même non fusionnée",
+    sudo: "s'exécute avec les droits administrateur",
+    "pipe-to-shell": "exécute un script téléchargé depuis internet",
+    terraform: "modifie ou détruit l'infrastructure",
+    "kubectl-delete": "supprime des ressources du cluster",
+    publish: "publie un paquet sur le registre",
+    "sql-drop": "supprime ou vide des tables de la base de données",
+    "secret-file":
+      "ce fichier peut contenir des secrets : clés, jetons ou mots de passe",
+  },
   logSnapshot: (auto) =>
     `Instantané du contexte enregistré (${auto ? "auto" : "manuel"})`,
   logStatus: (status, title, time) => `${status} : ${title} · ${time}`,
