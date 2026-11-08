@@ -2,6 +2,11 @@
 
 All notable changes to Vanguard are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [1.4.1] - 2026-11-09
+
+### Removed
+- The bundled Sequential Thinking MCP server and the orchestrator rule that sent hard plans through it. Current models reason step by step on their own, so the tool mostly added tokens to every planning turn. The pane still shows a `sequentialthinking` tool as planning if you add such a server yourself.
+
 ## [1.4.0] - 2026-10-24
 
 ### Added

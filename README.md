@@ -28,7 +28,7 @@ In Claude Code:
 
 Start a new session, or run `/vanguard` to open the pane now.
 
-**Requirements:** Claude Code 2.1.290 or newer (the live pane uses Claude Code's plugin hooks, which are in early access). Node.js 18+ for the bundled `sequential-thinking` and `playwright` MCP servers.
+**Requirements:** Claude Code 2.1.290 or newer (the live pane uses Claude Code's plugin hooks, which are in early access). Node.js 18+ for the bundled `playwright` MCP server.
 
 ## What you get
 
@@ -94,7 +94,6 @@ Vanguard adds a short set of orchestration rules to the system prompt (turn it o
 | Server | Why | Runs as |
 | --- | --- | --- |
 | [Context7](https://context7.com) | Current docs for libraries and frameworks | Remote HTTP, nothing to install |
-| [Sequential Thinking](https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking) | Step-by-step reasoning for hard plans | `npx` |
 | [Playwright](https://github.com/microsoft/playwright-mcp) | A real browser for checking web UI | `npx` (downloads a browser on first use) |
 
 ### Context guard and handoff

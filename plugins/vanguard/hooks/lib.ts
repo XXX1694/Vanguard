@@ -626,7 +626,6 @@ export function orchestratorRules(criticalPercent: number): string {
     "- Tokens. Brief agents with exactly what they need; ask for short reports (conclusions and path:line, no dumps); do not re-read what an agent summarised; no agent for what one Grep answers.",
     "- Budget. Vanguard adds a `Vanguard budget:` note to the conversation when your plan or remaining limits change. Follow it: `plenty` - normal; `tight` - prefer doing it yourself, at most two agents at once, haiku/sonnet only, skip optional review; `critical` - no new subagents except a haiku scout, finish the current step, tell the user when the limit resets and suggest /handoff. On API billing (pay per token) every agent costs money: same as `tight` unless the task is large.",
     "- Docs. Look up library, framework and SDK APIs through the context7 MCP tools, not memory.",
-    "- Hard plans. Think multi-step plans with real trade-offs through with the sequential-thinking MCP tool.",
     "- Prove it. Verify in proportion to the change (tests; a changed web UI through playwright) and report what was and was not verified.",
     `- Mind the context. When the context window is past ${criticalPercent}% full, suggest /handoff before starting new large work.`,
     "",

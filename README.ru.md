@@ -21,7 +21,7 @@
 
 Начни новую сессию или открой панель сразу командой `/vanguard`.
 
-**Требования:** Claude Code 2.1.290 или новее (панель работает на хуках плагинов Claude Code, они в раннем доступе). Для MCP-серверов `sequential-thinking` и `playwright` нужен Node.js 18+.
+**Требования:** Claude Code 2.1.290 или новее (панель работает на хуках плагинов Claude Code, они в раннем доступе). Для MCP-сервера `playwright` нужен Node.js 18+.
 
 ## Что внутри
 
@@ -87,7 +87,6 @@ Vanguard добавляет в системный промпт короткий 
 | Сервер | Зачем | Как запускается |
 | --- | --- | --- |
 | [Context7](https://context7.com) | Актуальная документация библиотек и фреймворков | Удалённый HTTP, ничего не ставится |
-| [Sequential Thinking](https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking) | Пошаговое рассуждение для сложных планов | `npx` |
 | [Playwright](https://github.com/microsoft/playwright-mcp) | Настоящий браузер для проверки интерфейсов | `npx` (при первом запуске скачивает браузер) |
 
 ### Страж контекста и handoff
